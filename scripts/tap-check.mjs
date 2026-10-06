@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 真点击走查（独立入口）
+ * 点击测试（独立入口）
  *
  * 为什么单独一个入口、不塞进 selfcheck 的六模块长流程：
  *   ① 它是**写操作**（真的点按钮、切页面），跟一堆只读采集混在一起不合适；
@@ -56,7 +56,7 @@ try {
 }
 const ready = ensureReady(PROJECT, env.bin, { log });
 if (!ready) {
-  console.error('模拟器未就绪，无法做真点击走查');
+  console.error('模拟器未就绪，无法做点击测试');
   process.exit(2);
 }
 
@@ -66,7 +66,7 @@ if (!entries.length) {
   log('· 静态分析里没有「点一下会跳页」的元素，无需点击');
 }
 
-log('· 真点击走查（只点静态能确定是导航的元素）');
+log('· 点击测试（只点静态能确定是导航的元素）');
 const r = auditTap(PROJECT, entries, env.bin, log, {
   home: nav.home,
   tabPages: nav.tabPages || [],
@@ -81,18 +81,19 @@ const report = {
   home: nav.home,
   hops: r.hops,
   stats: r.stats,
+  incomplete: r.incomplete,
   issues: r.issues,
 };
 fs.writeFileSync(outFile, JSON.stringify(report, null, 2));
 
 if (AS_JSON) {
   console.log(JSON.stringify(report, null, 2));
-  process.exit(r.stats.failed ? 1 : 0);
+  process.exit(r.incomplete ? 2 : r.stats.failed ? 1 : 0);
 }
 
 console.log('');
 console.log('══════════════════════════════════════════════════════════');
-console.log(' 真点击走查结果');
+console.log(' 点击测试结果');
 console.log('══════════════════════════════════════════════════════════');
 for (const h of r.hops) {
   if (h.skipped) {
@@ -120,4 +121,4 @@ if (r.stats.resetFailed) console.log(' 注意: 复位到首页连续无响应，
 console.log(' 明细: ' + path.relative(process.cwd(), outFile));
 console.log('══════════════════════════════════════════════════════════');
 
-process.exit(r.stats.failed ? 1 : 0);
+process.exit(r.incomplete ? 2 : r.stats.failed ? 1 : 0);

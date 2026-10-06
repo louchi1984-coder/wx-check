@@ -1,5 +1,5 @@
 /**
- * 真点击走查 —— 真正的点击逻辑
+ * 点击测试 —— 真正的点击逻辑
  *
  * 为什么需要它：静态推算只说「点 1 下能进 add 页」，
  * 那只是从代码里读出来的意图，按钮是不是真的能点进去、点了有没有反应，静态看不出来。
@@ -71,17 +71,15 @@ export function pageStack(project, bin) {
   }
 }
 
-function tapElement(project, bin, selector) {
+export function tapElement(project, bin, selector, call = wechatide) {
   try {
-    const r = wechatide(
-      'automation_element_action',
-      ['--project', project, '--action', 'tap', '--selector', selector],
-      { bin, timeout: 45000 }
-    );
-    return !!(r && r.result && r.result.success !== false);
-  } catch {
-    return false;
-  }
+    const found = call('automation_page_action', ['--project', project, '--action', 'querySelectorAll', '--selector', selector], { bin, timeout: 45000 });
+    const elements = found?.result?.elements;
+    if (found?.ok === false || !Array.isArray(elements)) return { ok: false, skipped: '无法读取元素，不能判断按钮失效' };
+    if (elements.length !== 1) return { ok: false, skipped: elements.length === 0 ? '按钮尚未出现，需要完成条件操作后补测' : '元素不唯一，需要明确目标后补测' };
+    const r = call('automation_element_action', ['--project', project, '--action', 'tap', '--selector', selector], { bin, timeout: 45000 });
+    return { ok: !!r && r.ok !== false && r.result?.success === true };
+  } catch (e) { return { ok: false, skipped: '工具调用失败，未获得按钮结果：' + e.message }; }
 }
 
 /**
@@ -132,7 +130,7 @@ export function findTapPath(edges, home, target) {
  * @param {{home?:string, settle?:number, maxTargets?:number, tabPages?:string[]}} opts
  */
 export function auditTap(project, edgeDetails, bin, log = () => {}, opts = {}) {
-  const { home = '', settle = 1.8, maxTargets = 20, tabPages = [] } = opts;
+  const { home = '', settle = 1.8, maxTargets = Infinity, tabPages = [] } = opts;
   const tabs = new Set(
     (tabPages || []).map((t) => String(t).replace(/^\//, '').replace(/\.(js|wxml|wxss|json)$/, ''))
   );
@@ -194,13 +192,16 @@ export function auditTap(project, edgeDetails, bin, log = () => {}, opts = {}) {
 
     let clicked = 0;
     let brokeAt = null;
+    let skipped = null;
     for (const e of path) {
       if (cur !== e.from) {
         brokeAt = '当前在 ' + cur + '，但这一步的入口在 ' + e.from;
         break;
       }
       log('    点击「' + (e.text || e.handler) + '」' + e.selector + ' …');
-      if (!tapElement(project, bin, e.selector)) {
+      const tapped = tapElement(project, bin, e.selector);
+      if (tapped.skipped) { skipped = tapped.skipped; break; }
+      if (!tapped.ok) {
         brokeAt = '点击调用本身失败（' + e.selector + '）';
         break;
       }
@@ -209,7 +210,7 @@ export function auditTap(project, edgeDetails, bin, log = () => {}, opts = {}) {
       const now = currentPage(project, bin);
       log('      点击后当前页: ' + (now || '读不到'));
       if (now === null) {
-        brokeAt = '点击后读不到当前页';
+        skipped = '点击后读不到当前页，无法判断按钮结果';
         break;
       }
       cur = now;
@@ -219,6 +220,7 @@ export function auditTap(project, edgeDetails, bin, log = () => {}, opts = {}) {
       }
     }
 
+    if (skipped) { stats.skipped++; hops.push({ to:t, skipped, actualTaps:clicked, landedOn:cur }); continue; }
     const stack = pageStack(project, bin);
     const ok = cur === t;
     if (ok) stats.verified++;
@@ -254,5 +256,5 @@ export function auditTap(project, edgeDetails, bin, log = () => {}, opts = {}) {
     sleep(0.6);
   }
 
-  return { ran: true, home, hops, issues, stats };
+  return { ran: true, home, hops, issues, stats, incomplete: stats.resetFailed || stats.skipped > 0 || targets.length < [...new Set(edges.map(e => e.to))].filter(t => t !== home).length };
 }

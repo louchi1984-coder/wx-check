@@ -180,7 +180,7 @@ t('明细口径写明「同一元素多 class 会重复计入」，避免主句�
   assert.ok(/重复计入/.test(issue.msg), '应写明口径差异，实际: ' + issue.msg);
 });
 
-console.log('· nav-cost（可达图与入口识别，供真点击/体验走查复用）');
+console.log('· nav-cost（可达图与入口识别，供真点击/流程测试复用）');
 
 t('从 wxml 抽出可点元素：handler、class、展示文字', () => {
   const wxml = '<view class="btn btn-ghost" bindtap="goAdd" data-type="expense">记一笔支出</view>';
@@ -382,7 +382,7 @@ t('parseErrorFiles：工程里不存在的路径会被过滤掉（防止把报�
   assert.deepStrictEqual(parseErrorFiles(msg, fx), ['pages/bad/bad.wxml']);
 }));
 
-// ── 模块 G 真点击走查：路径搜索 ──────────────────────────────────
+// ── 模块 G 点击测试：路径搜索 ──────────────────────────────────
 
 t('methodNavMap：按 handler 名精确查找，不把 Page({...}) 误认成方法', () => {
   const js = `
@@ -447,7 +447,7 @@ t('findTapPath：环不会死循环', () => {
   assert.deepStrictEqual(findTapPath(edges, 'a', 'b').map((e) => e.to), ['b']);
 });
 
-console.log('· ux-audit —— 体验走查（把「填写 → 提交」当用户体验一遍）');
+console.log('· ux-audit —— 流程测试（把「填写 → 提交」当用户体验一遍）');
 
 const FORM_WXML = [
   '<view class="page">',
@@ -541,7 +541,7 @@ t('judgeEmptySubmit：没变化也没提示代码 = P1（点了没反应）', ()
   assert.strictEqual(r.level, 'P1');
 });
 
-t('judgeSubmit：跳转 / 数据变化都算成功，毫无变化才是问题', () => {
+t('judgeSubmit：跳转 / 数据变化提供响应线索，不能证明业务保存成功', () => {
   assert.strictEqual(judgeSubmit({ pageChanged: true, landedOn: 'x' }).level, 'ok');
   assert.strictEqual(judgeSubmit({ pageChanged: false, dataChanged: true }).level, 'ok');
   assert.strictEqual(judgeSubmit({ pageChanged: false, dataChanged: false }).level, 'P2');

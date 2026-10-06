@@ -1,5 +1,5 @@
 /**
- * 模块 · 体验走查（ux-audit）
+ * 模块 · 流程测试（ux-audit）
  *
  * 跟其它模块的区别：
  *   - nav-cost 的入口识别：只读代码，推算「应该点几下」（静态）
@@ -17,14 +17,15 @@
  *   另一类机器判不了的：配色、字号、间距、文案是否通顺、图标是否易懂 —— 这些只能人看。
  *
  * ★ 安全约束 ★
- *   ① 走查会真写数据（不真用一遍就还是「看按钮能不能点」）。因此**开始前备份 storage、
- *      结束后原样还原**，不给用户留垃圾数据。
+ *   ① 测试会真写数据（不真用一遍就还是「看按钮能不能点」）。因此**开始前备份 storage、
+ *      结束后在finally中恢复并逐项核验**；失败保留工程外备份并停止后续写入。
  *   ② 任何点击/输入前先用 querySelectorAll 数元素，**只有恰好命中 1 个**才操作；
  *      命中多个一律不动（这正是之前「点错元素、还改写了数据」的根因）。
  *   ③ 危险操作（删除/清空/重置一类）**只做静态判定，永不点击**。
  */
 import { tapTargets } from './nav-cost.mjs';
 import { wechatide, sleep } from './wechatide.mjs';
+import { createStorageGuard } from './storage-guard.mjs';
 
 /** 取 <tag ...> 开标签的属性串 */
 function attr(attrs, name) {
@@ -189,8 +190,8 @@ export function judgeEmptySubmit(o) {
  * 纯函数：判断一次「正常提交」的结果。
  */
 export function judgeSubmit(o) {
-  if (o.pageChanged) return { level: 'ok', kind: '提交成功并跳转', msg: '提交后跳转到 ' + o.landedOn + '。' };
-  if (o.dataChanged) return { level: 'ok', kind: '提交成功（留在本页）', msg: '提交后留在本页，但数据已变化。' };
+  if (o.pageChanged) return { level: 'ok', kind: '提交后发生跳转', msg: '提交后跳转到 ' + o.landedOn + '。' };
+  if (o.dataChanged) return { level: 'ok', kind: '提交后页面数据变化', msg: '提交后留在本页，但数据已变化。' };
   return {
     level: 'P2',
     kind: '提交后没有变化',
@@ -280,43 +281,7 @@ function enterPage(project, bin, page, isTab, home, homeIsTab) {
   goNav(project, bin, home, homeIsTab ? 'tab' : 'relaunch');
   sleep(0.9);
   if (goNav(project, bin, page, 'navigate')) return true;
-  return goNav(project, bin, page, 'relaunch'); // 兜底：navigateTo 进不去就清栈重开
-}
-
-/**
- * evaluate 的返回值嵌套层数比别的工具深：{result:{success,result:{result:<值>}}}。
- * 逐层剥掉 result，直到拿到真正的值（别写死层数，工具改版会变）。
- */
-function unwrapEval(r) {
-  let v = r;
-  for (let i = 0; i < 6; i++) {
-    if (!v || typeof v !== 'object') break;
-    if (v.result === undefined) break;
-    v = v.result;
-  }
-  return v;
-}
-
-/** 读整个本地存储（用于走查前的备份） */
-function storageDump(project, bin) {
-  const fn =
-    "function(){try{var i=wx.getStorageInfoSync();var o={};i.keys.forEach(function(k){o[k]=wx.getStorageSync(k)});return JSON.stringify(o)}catch(e){return ''}}";
-  const r = CALL(project, bin, 'automation_evaluate', ['--fn-source', fn], 60000);
-  const v = unwrapEval(r);
-  return typeof v === 'string' && v.trim() ? v : '{}';
-}
-
-/** 原样还原存储（走查不留垃圾数据） */
-function storageRestore(project, bin, dumped) {
-  // 入参必须是 JSON 字符串；拿不到就宁可不还原，也绝不「先清空再解析失败」
-  if (typeof dumped !== 'string' || !dumped.trim()) return false;
-  try { JSON.parse(dumped); } catch { return false; }
-  const fn =
-    'function(){try{var ks=wx.getStorageInfoSync().keys;ks.forEach(function(k){wx.removeStorageSync(k)});var d=JSON.parse(' +
-    JSON.stringify(dumped) +
-    ");Object.keys(d).forEach(function(k){wx.setStorageSync(k,d[k])});return 'ok'}catch(e){return 'e:'+e}}";
-  const v = unwrapEval(CALL(project, bin, 'automation_evaluate', ['--fn-source', fn], 60000));
-  return v === 'ok';
+  return false; // 不清栈冒充真实进入方式
 }
 
 /** 给「填合法值」挑一个输入框：优先数字类，其次第一个 */
@@ -336,98 +301,97 @@ export function pickFillInput(inputs = []) {
  * @param {Function} log
  * @param {{settle?:number, home?:string, homeIsTab?:boolean, fillValue?:string}} opts
  */
-export function auditUx(project, plan, bin, log = () => {}, opts = {}) {
-  const { settle = 1.6, home = '', homeIsTab = false, fillValue = '1' } = opts;
-  const hops = [];
-  const issues = [];
-  const stats = { pages: 0, tasks: 0, blocked: 0, leaked: 0, silent: 0, ok: 0, notUnique: 0, restored: false };
-
-  const backup = storageDump(project, bin);
-  log('  · 已备份本地存储，走查结束后原样还原');
-
-  for (const p of plan) {
-    stats.pages++;
-    log('  · 页面 ' + p.page + '（' + p.tasks.length + ' 个提交任务）');
-
-    for (const t of p.tasks) {
-      stats.tasks++;
-
-      if (!enterPage(project, bin, p.page, p.isTab, home, homeIsTab)) {
-        log('    ! 打不开 ' + p.page + '，跳过');
-        hops.push({ page: p.page, text: t.text, skipped: '打不开这一页' });
-        continue;
-      }
-      sleep(settle);
-
-      const n = hitCount(project, bin, t.selector);
-      if (n !== 1) {
-        stats.notUnique++;
-        log('    · 「' + t.text + '」' + t.selector + ' 命中 ' + n + ' 个，不唯一，跳过（不乱点）');
-        hops.push({ page: p.page, text: t.text, selector: t.selector, skipped: '元素不唯一（命中 ' + n + ' 个）' });
-        continue;
-      }
-
-      // —— ① 空提交：什么都不填直接点
-      log('    · 空提交「' + t.text + '」…');
-      const b1 = snap(project, bin);
-      const r1 = tapUnique(project, bin, t.selector);
-      sleep(settle);
-      const a1 = snap(project, bin);
-      const empty = r1.ok
-        ? judgeEmptySubmit({
-            pageChanged: b1.page !== a1.page,
-            dataChanged: b1.sig !== a1.sig,
-            feedbackApi: t.feedbackApi,
-            guardHint: t.guardHint,
-          })
-        : { level: 'P2', kind: '点不动', msg: '这一步点击没成功：' + r1.why };
-      if (empty.level === 'ok') stats.blocked++;
-      else if (empty.kind === '空提交也能过') stats.leaked++;
-      else stats.silent++;
-      if (empty.level !== 'ok') {
-        issues.push({ level: empty.level, rule: empty.kind, where: p.page + ' 的「' + t.text + '」', msg: empty.msg });
-      }
-
-      // —— ② 正常填值提交
-      if (!enterPage(project, bin, p.page, p.isTab, home, homeIsTab)) continue;
-      sleep(settle);
-      const fill = pickFillInput(t.inputs);
-      let filled = { ok: false, why: '这一页没有可填的输入框' };
-      if (fill && hitCount(project, bin, fill.selector) === 1) {
-        filled = fillUnique(project, bin, fill.selector, fillValue);
-      }
-      const b2 = snap(project, bin);
-      const r2 = filled.ok ? tapUnique(project, bin, t.selector) : { ok: false, why: '没填成，跳过提交' };
-      sleep(settle * 1.5);
-      const a2 = snap(project, bin);
-      const sub = r2.ok
-        ? judgeSubmit({ pageChanged: b2.page !== a2.page, dataChanged: b2.sig !== a2.sig, landedOn: a2.page })
-        : { level: 'skip', kind: '没走成', msg: '填值/提交没成功：' + r2.why };
-      if (sub.level === 'ok') stats.ok++;
-      else if (sub.level === 'P2') issues.push({ level: 'P2', rule: sub.kind, where: p.page + ' 的「' + t.text + '」', msg: sub.msg });
-
-      hops.push({
-        page: p.page,
-        text: t.text,
-        selector: t.selector,
-        empty: { level: empty.level, kind: empty.kind, msg: empty.msg },
-        submit: { level: sub.level, kind: sub.kind, msg: sub.msg },
-        // 体验成本：进这一页 1 下 + 填值 1 下 + 提交 1 下
-        tapsInPage: (filled.ok ? 1 : 0) + (r2.ok ? 1 : 0),
-        filledWith: fill ? fill.selector + ' ← 「' + fillValue + '」' : null,
-      });
-      log('      空提交：' + empty.kind + ' ｜ 正常提交：' + sub.kind);
-    }
+export function formFillPlan(inputs = [], values = {}, fallback = '1') {
+  if (!inputs.length) return { error: '没有输入控件' };
+  const fields = [];
+  for (const input of inputs) {
+    if (!input.classes?.length || input.classes.some(c => !/^[A-Za-z0-9_-]+$/.test(c))) return { error: '输入控件无法唯一定位，需场景补测' };
+    if (!['input', 'textarea'].includes(input.tag)) return { error: '选择器等控件需按业务场景操作，不能用input冒充' };
+    const selector = '.' + input.classes.join('.');
+    const value = Object.prototype.hasOwnProperty.call(values, selector) ? values[selector] : inputs.length === 1 ? fallback : undefined;
+    if (typeof value !== 'string' || !value.length) return { error: '缺少已确认的合法字段值：' + selector };
+    fields.push({ selector, value });
   }
-
-  // —— 收尾：还原存储 + 回到首页
-  stats.restored = storageRestore(project, bin, backup);
-  if (home) {
-    goNav(project, bin, home, homeIsTab ? 'tab' : 'relaunch');
-    sleep(0.8);
-  }
-  log('  · 已还原本地存储：' + (stats.restored ? '成功（未留测试数据）' : '失败，请手动检查'));
-
-  return { ran: true, hops, issues, stats, backedUp: backup !== '{}' };
+  return { fields };
 }
 
+export function auditUx(project, plan, bin, log = () => {}, opts = {}) {
+  const { settle = 1.6, home = '', homeIsTab = false, fillValue = '1', values = {} } = opts;
+  const driver = opts.driver || {
+    enter: p => enterPage(project, bin, p.page, p.isTab, home, homeIsTab),
+    count: selector => hitCount(project, bin, selector),
+    fill: (selector, value) => fillUnique(project, bin, selector, value),
+    value: selector => {
+      const r = CALL(project, bin, 'automation_element_action', ['--action', 'value', '--selector', selector]);
+      if (!r || r.__err || r.ok === false) throw Error('无法核对输入控件值');
+      const value = r.result;
+      if (typeof value !== 'string' && typeof value !== 'number') throw Error('输入值返回格式异常');
+      return String(value);
+    },
+    tap: selector => tapUnique(project, bin, selector),
+    snap: () => snap(project, bin),
+    sleep,
+    finish: () => { if (home && !goNav(project, bin, home, homeIsTab ? 'tab' : 'relaunch')) throw Error('未能恢复首页'); },
+  };
+  const hops = [], issues = [];
+  const stats = { pages: 0, tasks: 0, blocked: 0, leaked: 0, silent: 0, ok: 0, notUnique: 0, restored: false };
+  // 可靠备份及落盘成功后才允许进入页面、点击、输入。
+  let guard;
+  try { guard = opts.guardFactory ? opts.guardFactory() : createStorageGuard(project, bin, { backupDir: opts.backupDir, call: opts.call }); }
+  catch (e) { return {ran:false,hops,issues,stats,backedUp:false,backupFile:null,executionError:'备份失败，未执行业务操作：'+e.message,restoreError:null,incomplete:true}; }
+  let executionError = null, restoreError = null;
+  const snapshot = () => {
+    const s = driver.snap();
+    if (!s?.page || !s.sig) throw Error('页面状态读取失败，停止提交');
+    return s;
+  };
+  const fillAll = fields => {
+    for (const f of fields) {
+      if (driver.count(f.selector) !== 1) return { ok:false, why:'输入控件不存在或不唯一：'+f.selector };
+      const r = driver.fill(f.selector, f.value);
+      if (!r.ok || driver.value(f.selector) !== f.value) return { ok:false, why:'输入未核实：'+f.selector };
+    }
+    return { ok:true };
+  };
+  try {
+    for (const p of plan) {
+      stats.pages++;
+      for (const t of p.tasks) {
+        stats.tasks++;
+        const filledPlan = formFillPlan(t.inputs, values[p.page] || {}, fillValue);
+        if (filledPlan.error) { hops.push({page:p.page,text:t.text,skipped:filledPlan.error}); continue; }
+        if (!driver.enter(p)) { hops.push({page:p.page,text:t.text,skipped:'未能通过真实返回栈进入页面'}); continue; }
+        driver.sleep(settle);
+        if (driver.count(t.selector) !== 1) { stats.notUnique++; hops.push({page:p.page,text:t.text,skipped:'提交按钮尚未出现或不唯一，需补充前置操作'}); continue; }
+        const cleared = fillAll(filledPlan.fields.map(f => ({...f,value:''})));
+        if (!cleared.ok) { hops.push({page:p.page,text:t.text,skipped:'空提交准备失败：'+cleared.why}); continue; }
+        const b1 = snapshot(), r1 = driver.tap(t.selector);
+        driver.sleep(settle);
+        const a1 = snapshot();
+        const empty = r1.ok ? judgeEmptySubmit({pageChanged:b1.page!==a1.page,dataChanged:b1.sig!==a1.sig,feedbackApi:t.feedbackApi,guardHint:t.guardHint}) : {level:'skip',kind:'未测成',msg:r1.why};
+        if (empty.level === 'ok') stats.blocked++;
+        else if (empty.level !== 'skip') { if(empty.kind==='空提交也能过') stats.leaked++; else stats.silent++; issues.push({level:empty.level,rule:empty.kind,where:p.page+' 的「'+t.text+'」',msg:empty.msg}); }
+        if (!driver.enter(p)) { hops.push({page:p.page,text:t.text,empty,skipped:'正常提交前无法重新进入'}); continue; }
+        driver.sleep(settle);
+        const filled = fillAll(filledPlan.fields);
+        let sub = {level:'skip',kind:'未测成',msg:filled.why || '提交按钮不存在或不唯一'};
+        let r2 = {ok:false};
+        if (filled.ok && driver.count(t.selector) === 1) {
+          const b2 = snapshot(); r2 = driver.tap(t.selector); driver.sleep(settle*1.5); const a2 = snapshot();
+          // 这里只提供响应线索，最终保存等业务结果必须另行核验。
+          sub = r2.ok ? judgeSubmit({pageChanged:b2.page!==a2.page,dataChanged:b2.sig!==a2.sig,landedOn:a2.page}) : {level:'skip',kind:'未测成',msg:r2.why};
+          if (sub.level === 'ok') stats.ok++;
+          else if(sub.level==='P2') issues.push({level:'P2',rule:sub.kind,where:p.page+' 的「'+t.text+'」',msg:sub.msg});
+        }
+        hops.push({page:p.page,text:t.text,selector:t.selector,empty,submit:sub,businessResult:'未由表单辅助核验',tapsInPage:filledPlan.fields.length+(r2.ok?1:0),filledWith:filledPlan.fields.map(f=>f.selector+' ← '+f.value).join('；')});
+      }
+    }
+  } catch (e) { executionError = e.message; }
+  finally {
+    try { stats.restored = guard.restore(); if(!stats.restored) restoreError='存储恢复未通过核验'; } catch(e) { restoreError=e.message; }
+    try { driver.finish(); } catch(e) { executionError=executionError || e.message; }
+  }
+  log('  · 存储恢复：'+(stats.restored?'所有键和值核验一致':'失败；备份保留于 '+guard.backupFile));
+  return { ran:true,hops,issues,stats,backedUp:true,backupFile:guard.backupFile,executionError,restoreError,
+    incomplete:!!executionError || !stats.restored || hops.some(h=>h.skipped || h.empty?.level==='skip' || h.submit?.level==='skip') };
+}

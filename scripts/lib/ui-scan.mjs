@@ -153,14 +153,45 @@ export async function scanUI(project, opts = {}) {
   if (!pages.length) throw new Error('未找到匹配的页面: ' + only);
   const tabs = tabPages(app);
   const timings = [];
+  /**
+   * automator 在 simulator_refresh 之后会有一段不可用窗口（重编译中），
+   * 此时 IDE 侧直接回 "timeout waiting for automator response" —— 加大调用方超时没有用，
+   * 因为这个错误是 IDE 自己按内部超时返回的。命中后等重编译结束再重试一次。
+   */
+  const AUTOMATOR_DEAD = /timeout waiting for automator response/i;
+  const settle = opts.sleep || ((ms) => new Promise((res) => setTimeout(res, ms)));
+  let recovered = false;
+
+  const dead = (v) => AUTOMATOR_DEAD.test(String(v?.message ?? v));
+
+  /** 单次尝试：无论是抛异常还是返回 ok:false，都统一成「结果 + 错误信息」。 */
+  async function attempt(tool, args) {
+    let r = null;
+    let err = null;
+    try {
+      r = await call(tool, ['--project', project, ...args], { bin, timeout: 45000 });
+    } catch (e) {
+      err = String(e?.message || e);
+    }
+    if (!err && (!r || r.ok === false || r.result?.success === false)) {
+      err = String(r?.message || r?.result?.error || '调用未成功');
+    }
+    return { r, err };
+  }
+
   async function run(tool, args) {
     const start = Date.now();
-    let r;
+    let r = null;
     try {
-      r = await call(tool, ['--project', project, ...args], { bin, timeout: 15000 });
-      if (!r || r.ok === false || r.result?.success === false) {
-        throw new Error(r?.message || r?.result?.error || '调用未成功');
+      let { r: res, err } = await attempt(tool, args);
+      if (err && dead(err) && !recovered && tool.startsWith('automation_')) {
+        recovered = true;
+        log('  automator 忙（重编译中），等待 20 秒后重试一次');
+        await settle(20000);
+        ({ r: res, err } = await attempt(tool, args));
       }
+      if (err) throw new Error(err);
+      r = res;
       return r;
     } finally {
       timings.push({ tool, ms: Date.now() - start, ok: !!r && r.ok !== false && r.result?.success !== false });

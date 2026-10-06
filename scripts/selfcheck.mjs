@@ -204,7 +204,7 @@ if (want('ui')) {
   } else {
     log('· 模块 B 界面布局');
     try {
-      const r = scanUI(PROJECT, { only: PAGE, bin: env.bin, log, screenshot: SHOT, ready: true, pageData });
+      const r = await scanUI(PROJECT, { only: PAGE, bin: env.bin, log, screenshot: SHOT, ready: true, pageData });
       report.modules.ui = r;
       log('  ' + r.pages.length + ' 页 / ' + r.elements + ' 元素 → P0 ' + r.totals.P0 + '，P1 ' + r.totals.P1);
       if (r.elements === 0) log('  ! 未采集到任何元素 —— 结论不可信，建议重跑或检查页面是否有 class');
@@ -231,7 +231,7 @@ if (ONLY) {
   report.only = ONLY;
 }
 
-// ── G 真点击走查（写操作，本入口不执行，只提示） ─────────────
+// ── G 点击测试（写操作，本入口不执行，只提示） ─────────────
 // 为什么本入口不执行它：
 //   ① 它属写操作（真的点按钮、切页面），跟一堆只读采集混在一起不合适；
 //   ② 实测把它接在本流程尾部时，页面导航调用会无响应、把整轮拖住（同一段调用
@@ -240,12 +240,12 @@ if (want('tap')) {
   report.modules.tap = {
     ran: false,
     skipped: true,
-    reason: '真点击走查属写操作，需用独立命令执行（本入口不执行）',
+    reason: '点击测试属写操作，需用独立命令执行（本入口不执行）',
     issues: [],
     hops: [],
     stats: {},
   };
-  log('· 模块 G 真点击走查 —— 本入口不执行（它属写操作，会真的点按钮、切页面）');
+  log('· 模块 G 点击测试 —— 本入口不执行（它属写操作，会真的点按钮、切页面）');
   log('  需要时单独跑这一条，结果写到 <工程>/.mp-autocheck/tap-report.json：');
   log('    node ' + path.join(path.dirname(process.argv[1] || ''), 'tap-check.mjs') + ' --project ' + PROJECT);
 }
@@ -343,7 +343,7 @@ if (cp) {
 
 const tp = report.modules.tap;
 if (tp) {
-  console.log('\n── 模块 G · 真点击走查 ─────────────────────────────────');
+  console.log('\n── 模块 G · 点击测试 ─────────────────────────────────');
   if (tp.skipped) console.log('   未执行 —— ' + tp.reason);
   else if (tp.error) console.log('   ! ' + tp.error);
   else {
