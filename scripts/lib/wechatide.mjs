@@ -118,8 +118,8 @@ export function wechatide(tool, args = [], opts = {}) {
     fd = -1;
     out = fs.existsSync(outFile) ? fs.readFileSync(outFile, 'utf8') : '';
     timedOut = r && r.signal === 'SIGKILL';
+    if (timedOut || r?.error?.code === 'ETIMEDOUT') throw new Error(tool + ' 超过 ' + Math.round(timeout / 1000) + ' 秒无响应，已终止');
     if (!out && r && r.error) throw new Error(tool + ' 调用失败: ' + r.error.message);
-    if (!out && timedOut) throw new Error(tool + ' 超过 ' + Math.round(timeout / 1000) + ' 秒无响应，已终止');
   } finally {
     if (fd >= 0) {
       try {
@@ -142,8 +142,8 @@ export function wechatide(tool, args = [], opts = {}) {
 }
 
 /** 查环境：CLI 是否可用、开发者工具是否登录 */
-export function envStatus() {
-  const bin = findCli();
+export function envStatus(opts = {}) {
+  const bin = opts.bin || findCli();
   const st = {
     cli: !!bin,
     bin: bin || null,
@@ -155,7 +155,8 @@ export function envStatus() {
   };
   if (!bin) return st;
   try {
-    const r = wechatide('check_wechatide_status', ['--skill-version', SKILL_VERSION], { bin });
+    const r = (opts.call || wechatide)('check_wechatide_status', ['--skill-version', SKILL_VERSION], { bin, timeout: 20000 });
+    if (r.ok === false) { st.error = r.message || '状态查询失败'; return st; }
     const res = r.result || r; // 状态字段在 result 内
     st.loginExpired = res.loginExpired ?? null;
     const u = res.loginUser;
@@ -167,6 +168,16 @@ export function envStatus() {
   return st;
 }
 
+/** 只有明确过期才要求扫码；连接失败和缺字段都不是未登录。 */
+export function loginProblem(env) {
+  return env.loginExpired === true ? '开发者工具登录已过期，需扫码登录' :
+    '开发者工具连接状态未确认：' + (env.error || '未返回明确登录状态') + '；不能据此判定未登录';
+}
+
+export function loginLabel(env) {
+  return env.login ? '已登录' : env.loginExpired === true ? '已过期' : '未确认';
+}
+
 /**
  * 打开项目窗口（幂等：同一工程已开则复用）。
  *
@@ -175,7 +186,7 @@ export function envStatus() {
  * 必须由用户决定（见 SKILL.md「作用域」一节），不要自作主张换工程跑。
  */
 export function openWindow(project, bin) {
-  return wechatide('open_project_window', ['--project', project, '--window-mode', 'liteMode'], { bin });
+  return wechatide('open_project_window', ['--project', project, '--window-mode', 'liteMode'], { bin, timeout: 20000 });
 }
 
 export function sleep(sec) {
@@ -248,7 +259,7 @@ export function wechatideAsync(tool, args = [], opts = {}) {
 }
 
 /**
- * 等模拟器就绪：先 refresh，再轮询 evaluate 直到能拿到响应。
+ * 等模拟器就绪：先探测，未就绪时最多刷新一次；整个过程共用截止时间。
  *
  * 为什么必须有这一步：工程首次打开（或开发者工具刚重启）时，模拟器还在编译，
  * 此时任何 automator 调用都会 `timeout waiting for automator response`，
@@ -257,37 +268,50 @@ export function wechatideAsync(tool, args = [], opts = {}) {
  * @returns {boolean} 是否就绪
  */
 export function ensureReady(project, bin, opts = {}) {
-  const { timeout = 90, log = () => {}, refresh = true } = opts;
-
-  // refresh:false 用于「调用方刚刚已经 refresh 过」的场景——
-  // 再 refresh 一次会把调用方正要读取的 console / network 缓冲区清掉。
-  if (refresh) {
-    try {
-      wechatide('simulator_refresh', ['--project', project], { bin, timeout: 240000 });
-    } catch (e) {
-      log('  simulator_refresh 未成功: ' + String(e.message).slice(0, 100));
-    }
-  }
-
-  const deadline = Date.now() + timeout * 1000;
+  const { timeout = 90, log = () => {}, refresh = true,
+    call = wechatide, now = Date.now, pause = sleep } = opts;
+  const deadline = now() + timeout * 1000;
+  const remaining = () => Math.max(0, deadline - now());
   let n = 0;
-  while (Date.now() < deadline) {
+  function probe() {
+    const budget = Math.min(10000, remaining());
+    if (budget <= 0) return false;
     n++;
     try {
-      const r = wechatide(
+      const r = call(
         'automation_evaluate',
         ['--project', project, '--fn-source', 'function(){return 1;}'],
-        { bin, timeout: 45000 }
+        { bin, timeout: budget }
       );
-      if (r && r.ok !== false && r.result && r.result.success !== false) {
+      let value = r;
+      for (let i = 0; i < 8 && value && typeof value === 'object' && 'result' in value; i++) value = value.result;
+      if (remaining() > 0 && r?.ok !== false && r?.result?.success !== false && value === 1) {
         log('  模拟器就绪（第 ' + n + ' 次探测）');
         return true;
       }
     } catch {
       /* 未就绪，继续等 */
     }
-    if (Date.now() >= deadline) break;
-    sleep(3);
+    return false;
+  }
+  if (remaining() > 0 && probe()) return true;
+  // 已就绪不刷新；刷新耗时也计入总预算，不在后面重新开始计时。
+  const refreshBudget = Math.min(20000, remaining());
+  if (refresh && refreshBudget > 0) {
+    try {
+      const r = call('simulator_refresh', ['--project', project], { bin, timeout: refreshBudget });
+      if (r?.ok === false || r?.result?.success === false) {
+        log('  模拟器刷新失败，停止准备');
+        return false;
+      }
+    } catch (e) {
+      log('  模拟器刷新失败，停止准备：' + String(e.message).slice(0, 100));
+      return false;
+    }
+  }
+  while (remaining() > 0) {
+    pause(Math.min(3, remaining() / 1000));
+    if (remaining() > 0 && probe()) return true;
   }
   log('  模拟器 ' + timeout + ' 秒内未就绪（已探测 ' + n + ' 次）');
   return false;

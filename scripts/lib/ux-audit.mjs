@@ -23,9 +23,10 @@
  *      命中多个一律不动（这正是之前「点错元素、还改写了数据」的根因）。
  *   ③ 危险操作（删除/清空/重置一类）**只做静态判定，永不点击**。
  */
-import { tapTargets } from './nav-cost.mjs';
+import { tapTargets, classTokens } from './nav-cost.mjs';
 import { wechatide, sleep } from './wechatide.mjs';
 import { createStorageGuard } from './storage-guard.mjs';
+import { assertAutomationPage } from './page-context.mjs';
 
 /** 取 <tag ...> 开标签的属性串 */
 function attr(attrs, name) {
@@ -51,7 +52,8 @@ export function formInputs(wxml) {
     const cls = attr(attrs, 'class');
     out.push({
       tag,
-      classes: cls.split(/\s+/).filter(Boolean),
+      classes: classTokens(cls).classes,
+      dynamicClass: classTokens(cls).dynamic,
       type: attr(attrs, 'type') || (tag === 'picker' ? 'picker' : 'text'),
       placeholder: attr(attrs, 'placeholder'),
       handler: attr(attrs, 'bindinput') || attr(attrs, 'bindchange') || '',
@@ -62,8 +64,8 @@ export function formInputs(wxml) {
 }
 
 /** 从 js 源码里取某个方法的函数体（括号配平；找不到返回 ''） */
-export function methodBody(js, name) {
-  if (!name || !/^[A-Za-z_$][\w$]*$/.test(name)) return '';
+export function methodBodyOrNull(js, name) {
+  if (!name || !/^[A-Za-z_$][\w$]*$/.test(name)) return null;
   const re = new RegExp('(?:^|[^\\w$.])' + name + '\\s*(?::\\s*(?:async\\s+)?function\\s*)?\\([^)]*\\)\\s*\\{', 'g');
   let m;
   while ((m = re.exec(js))) {
@@ -78,7 +80,12 @@ export function methodBody(js, name) {
       }
     }
   }
-  return '';
+  return null;
+}
+
+/** 取方法体；找不到或为空都返回 ''。要区分“找不到”和“空函数体”（如 noop: function () {}）用 methodBodyOrNull。 */
+export function methodBody(js, name) {
+  return methodBodyOrNull(js, name) ?? '';
 }
 
 /**
@@ -201,9 +208,12 @@ export function judgeSubmit(o) {
 
 /* ═══════════════  以下为真跑部分（会操作模拟器）  ═══════════════ */
 
-function CALL(project, bin, tool, args, timeout = 90000) {
+function CALL(project, bin, tool, args, timeout = 90000, call = wechatide) {
+  if (tool === 'automation_element_action' || (tool === 'automation_page_action' && args.includes('getData'))) {
+    assertAutomationPage(project, bin, call);
+  }
   try {
-    return wechatide(tool, ['--project', project, ...args], { bin, timeout });
+    return call(tool, ['--project', project, ...args], { bin, timeout });
   } catch (e) {
     return { __err: String(e.message).slice(0, 200) };
   }
@@ -222,32 +232,32 @@ export function pageData(project, bin) {
 }
 
 /** 一个选择器当前命中几个元素。返回 -1 表示读不到（模拟器无响应）。 */
-export function hitCount(project, bin, selector) {
-  const r = CALL(project, bin, 'automation_page_action', ['--action', 'querySelectorAll', '--selector', selector]);
+export function hitCount(project, bin, selector, call = wechatide) {
+  const r = CALL(project, bin, 'automation_page_action', ['--action', 'querySelectorAll', '--selector', selector], 20000, call);
   if (!r || r.__err) return -1;
   const els = r && r.result && r.result.elements;
   return Array.isArray(els) ? els.length : -1;
 }
 
 /** 只有恰好命中 1 个元素时才点击 —— 这是「不点错元素」的唯一保证 */
-export function tapUnique(project, bin, selector) {
-  const n = hitCount(project, bin, selector);
+export function tapUnique(project, bin, selector, call = wechatide) {
+  const n = hitCount(project, bin, selector, call);
   if (n < 0) return { ok: false, why: '读不到元素（模拟器无响应）' };
   if (n === 0) return { ok: false, why: '元素不存在（可能没渲染）' };
   if (n > 1) return { ok: false, why: '命中 ' + n + ' 个元素，不唯一' };
-  const r = CALL(project, bin, 'automation_element_action', ['--action', 'tap', '--selector', selector]);
+  const r = CALL(project, bin, 'automation_element_action', ['--action', 'tap', '--selector', selector], 20000, call);
   if (!r || r.__err) return { ok: false, why: r && r.__err };
   if (r.ok === false) return { ok: false, why: r.message || '调用失败' };
   return { ok: r.result ? r.result.success !== false : true, why: '' };
 }
 
 /** 只有恰好命中 1 个元素时才输入 */
-export function fillUnique(project, bin, selector, value) {
-  const n = hitCount(project, bin, selector);
+export function fillUnique(project, bin, selector, value, call = wechatide) {
+  const n = hitCount(project, bin, selector, call);
   if (n < 0) return { ok: false, why: '读不到元素' };
   if (n === 0) return { ok: false, why: '元素不存在' };
   if (n > 1) return { ok: false, why: '命中 ' + n + ' 个元素，不唯一' };
-  const r = CALL(project, bin, 'automation_element_action', ['--action', 'input', '--selector', selector, '--value', value]);
+  const r = CALL(project, bin, 'automation_element_action', ['--action', 'input', '--selector', selector, '--value', value], 20000, call);
   if (!r || r.__err) return { ok: false, why: r && r.__err };
   if (r.ok === false) return { ok: false, why: r.message || '调用失败' };
   return { ok: true, why: '' };

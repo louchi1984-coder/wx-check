@@ -82,6 +82,10 @@ export async function createLiveDeviceSession(project, opts = {}) {
   async function call(tool, args = [], options = {}) {
     const value = key => args[args.indexOf('--' + key) + 1];
     const timeout = options.timeout || 15000;
+    if (tool === 'automation_runtime_info' && value('action') === 'currentPage') {
+      const page = await request('App.getCurrentPage', {}, timeout);
+      return { ok: true, result: { success: true, currentPage: page } };
+    }
     if (tool === 'automation_evaluate') {
       const result = await request('App.callFunction', { functionDeclaration: value('fn-source'), args: [] }, timeout);
       return { ok: true, result: { success: true, result } };

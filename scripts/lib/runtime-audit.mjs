@@ -81,42 +81,35 @@ function parseNetwork(lines) {
 const uniq = (arr) => [...new Set(arr)];
 const shorten = (s, n = 180) => (String(s).length > n ? String(s).slice(0, n) + '…' : String(s));
 
-export function auditRuntime(project, bin, log = () => {}) {
+export function auditRuntime(project, bin, log = () => {}, opts = {}) {
+  const call = opts.call || wechatide;
+  const now = opts.now || Date.now;
+  const pause = opts.pause || sleep;
+  const deadline = now() + 90000;
   const issues = [];
   const raw = { console: [], network: [] };
   const stats = { consoleLines: 0, errors: 0, warns: 0, requests: 0, failures: 0 };
 
   try {
-    wechatide('simulator_refresh', ['--project', project], { bin, timeout: 240000 });
+    const r = call('simulator_refresh', ['--project', project], { bin, timeout: 20000 });
+    if (r?.ok === false || r?.result?.success === false) throw Error(r.message || '刷新未成功');
   } catch (e) {
-    log('  simulator_refresh 失败: ' + shorten(e.message, 100));
+    throw Error('运行日志采集前刷新失败，停止采集：' + shorten(e.message, 100));
   }
 
   // refresh 会重启小程序，必须等它重新编译完再往下走。
   // 不等就直接预热的话，那次调用会撞在重编译窗口上失败，整块运行时体检被判成
   // 「通道不可用」—— 真正的报错一条都读不到，用户拿到的是个假结论。
   // 这里 refresh:false —— 上面刚 refresh 过，再刷一次会把要读的缓冲区清空。
-  if (!ensureReady(project, bin, { log, timeout: 60, refresh: false })) {
-    log('  模拟器在 refresh 后未就绪，运行时结论可能不完整');
+  const remaining = deadline - now();
+  if (remaining <= 0 || !ensureReady(project, bin, { log, timeout: remaining / 1000, refresh: false, call, now, pause })) {
+    throw Error('运行日志采集前模拟器未就绪，停止采集');
   }
-
-  // 预热：建立 automator 连接，否则 console / network 缓冲区读不到
-  try {
-    wechatide('automation_evaluate', ['--project', project, '--fn-source', 'function(){return 1;}'], { bin });
-  } catch (e) {
-    issues.push({
-      level: 'P1',
-      rule: '运行时通道不可用',
-      where: '自动化通道',
-      msg: 'automation_evaluate 调用失败: ' + shorten(e.message, 140),
-      fix: '确认项目窗口已打开、模拟器已就绪；必要时重开项目窗口',
-    });
-    return { issues, raw, stats };
-  }
+  // ensureReady的成功探测已建立连接，不再重复预热或刷新。
 
   const readBuf = (tool) => {
     try {
-      const r = wechatide(tool, ['--project', project, '--command', 'grep -n .'], { bin });
+      const r = call(tool, ['--project', project, '--command', 'grep -n .'], { bin });
       return typeof r.result === 'string' ? r.result : '';
     } catch {
       return '';
@@ -128,7 +121,7 @@ export function auditRuntime(project, bin, log = () => {}) {
   let consoleRecs = [];
   let netRecs = [];
   for (let i = 0; i < 3; i++) {
-    sleep(i === 0 ? 4 : 3);
+    pause(i === 0 ? 4 : 3);
     const c = parseConsole(parseRecords(readBuf('get_simulator_console')));
     const n = parseNetwork(parseRecords(readBuf('get_simulator_network')));
     if (c.length) consoleRecs = c;

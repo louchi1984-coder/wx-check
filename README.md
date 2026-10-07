@@ -31,15 +31,21 @@ Windows 使用实际发现的 `WECHATIDE_BIN`、`WECHATIDE_DATA_DIR`、`WECHATID
 
 微信开发者工具 Stable `2.02.2608080`、内置 skill `0.3.11` 在 Mac 与 Windows 上实测。Windows 已验证 CLI、授权登录、真实编译、43款机型采集、6款精测截图审阅及两款主流机型非数据点击。完整诊断面板及数据写入／删除／清空／导出流程尚未完整验证，不宣称 Windows 四类检测全部通过。
 
-离线自检共97项：
+本轮登录状态、准备等待和页面核对修正已在Mac实跑。新版196项自检已在Windows实机通过；Windows官方接口明确返回登录过期，skill正确停止。登录后的实际点击、输入、准备等待和页面采集尚未验证。
+
+当前源文件版离线自检共196项（10个脚本）：
 
 ```sh
 node scripts/selftest.mjs
 node scripts/device-selftest.mjs
 node scripts/device-live-selftest.mjs
 node scripts/ui-batch-selftest.mjs
+node scripts/interaction-selftest.mjs
+node scripts/evidence-selftest.mjs
+node scripts/diagnostics-selftest.mjs
+node scripts/report-lint-selftest.mjs
+node scripts/tap-static-selftest.mjs
+node scripts/runtime-selftest.mjs
 ```
 
 自检夹具运行时在系统临时目录生成并清理；发布包不包含 `.wxml`、`.wxss`。内部机型切换接口与工具版本有关，其他版本需重新验证。
-
-新版补齐条件按钮检查、工程外存储备份、异常恢复及核对、多字段输入。117项回归通过；新增交互保护采用隔离模拟驱动，不等于Windows或WorkBuddy新版完整流程已实测。

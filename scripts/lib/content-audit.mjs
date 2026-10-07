@@ -22,6 +22,7 @@
 import fs from 'fs';
 import path from 'path';
 import { wechatide, sleep, ensureReady } from './wechatide.mjs';
+import { assertAutomationPage } from './page-context.mjs';
 
 /** 量文字宽度时的容差：字体回退会让量出来偏窄，宁可漏报也不误报 */
 const TOL_ABS = 4;
@@ -248,6 +249,8 @@ export function auditContent(project, bin, log = () => {}, opts = {}) {
       continue;
     }
     sleep(1.2);
+    const context = assertAutomationPage(project, bin);
+    if (context.route.replace(/^\//, '') !== page) throw Error('内容采集目标页面不一致，停止采集');
     stats.pages++;
 
     // ── 读页面 data ────────────────────────────────────────────

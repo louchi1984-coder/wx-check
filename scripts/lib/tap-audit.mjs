@@ -25,6 +25,7 @@
  *      并且此时连兜底定时器都触发不了（事件循环被同步调用占住）。详见 SKILL.md。
  */
 import { wechatide, sleep } from './wechatide.mjs';
+import { assertAutomationPage } from './page-context.mjs';
 
 /**
  * 复位到首页。
@@ -72,14 +73,18 @@ export function pageStack(project, bin) {
 }
 
 export function tapElement(project, bin, selector, call = wechatide) {
+  let checkingPage = false;
   try {
     const found = call('automation_page_action', ['--project', project, '--action', 'querySelectorAll', '--selector', selector], { bin, timeout: 45000 });
     const elements = found?.result?.elements;
     if (found?.ok === false || !Array.isArray(elements)) return { ok: false, skipped: '无法读取元素，不能判断按钮失效' };
     if (elements.length !== 1) return { ok: false, skipped: elements.length === 0 ? '按钮尚未出现，需要完成条件操作后补测' : '元素不唯一，需要明确目标后补测' };
+    checkingPage = true;
+    const context = assertAutomationPage(project, bin, call);
+    checkingPage = false;
     const r = call('automation_element_action', ['--project', project, '--action', 'tap', '--selector', selector], { bin, timeout: 45000 });
-    return { ok: !!r && r.ok !== false && r.result?.success === true };
-  } catch (e) { return { ok: false, skipped: '工具调用失败，未获得按钮结果：' + e.message }; }
+    return { ok: !!r && r.ok !== false && r.result?.success === true, context };
+  } catch (e) { return { ok: false, ...(checkingPage ? { aborted: true } : {}), skipped: '工具调用失败，未获得按钮结果：' + e.message }; }
 }
 
 /**
@@ -200,6 +205,7 @@ export function auditTap(project, edgeDetails, bin, log = () => {}, opts = {}) {
       }
       log('    点击「' + (e.text || e.handler) + '」' + e.selector + ' …');
       const tapped = tapElement(project, bin, e.selector);
+      if (tapped.aborted) { stats.resetFailed = true; skipped = tapped.skipped; break; }
       if (tapped.skipped) { skipped = tapped.skipped; break; }
       if (!tapped.ok) {
         brokeAt = '点击调用本身失败（' + e.selector + '）';
@@ -220,7 +226,7 @@ export function auditTap(project, edgeDetails, bin, log = () => {}, opts = {}) {
       }
     }
 
-    if (skipped) { stats.skipped++; hops.push({ to:t, skipped, actualTaps:clicked, landedOn:cur }); continue; }
+    if (skipped) { stats.skipped++; hops.push({ to:t, skipped, actualTaps:clicked, landedOn:cur }); if (stats.resetFailed) break; continue; }
     const stack = pageStack(project, bin);
     const ok = cur === t;
     if (ok) stats.verified++;

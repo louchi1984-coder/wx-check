@@ -9,16 +9,17 @@
  *              危险操作有没有后路、这件事一共要几下。
  *
  * 用法:
- *   node ux-check.mjs --project <工程绝对路径> [--fill 100] [--json]
+ *   node ux-check.mjs --project <工程绝对路径> --out <工程外证据目录> [--fill 100] [--values-file <文件>] [--json]
  *
- * 结果写到 <工程>/.mp-autocheck/ux-report.json；退出码 0 无 P1 / 1 有 P1 / 2 用法或环境错误
+ * 结果独占写入 <out>/ux-report-<时间戳>.json（工程内 .mp-autocheck/ux-report.json 仅为最近一次副本）；--json 时进度走 stderr；退出码 0 无 P1 / 1 有 P1 / 2 用法或环境错误
  *
  * ★ 这个入口会真的往小程序里写数据（否则就还是「看按钮能不能点」）。
  *   因此它开始前备份本地存储、结束后原样还原，备份落盘及恢复核验失败时停止；服务端副作用仍需隔离，见execution.md。
  */
 import fs from 'fs';
 import path from 'path';
-import { envStatus, openWindow, ensureReady } from './lib/wechatide.mjs';
+import { resolveOutDir, saveReport } from './lib/evidence.mjs';
+import { envStatus, loginProblem, openWindow, ensureReady } from './lib/wechatide.mjs';
 import { analyzeNavCost } from './lib/nav-cost.mjs';
 import { findForms, findDangerOps, auditUx } from './lib/ux-audit.mjs';
 
@@ -35,17 +36,23 @@ const VALUES = valuesFile ? JSON.parse(fs.readFileSync(valuesFile, 'utf8')) : {}
 if (!VALUES || typeof VALUES !== 'object' || Array.isArray(VALUES)) throw Error('--values-file 必须是按页面和选择器组织的对象');
 
 if (!PROJECT || !fs.existsSync(PROJECT) || !fs.existsSync(path.join(PROJECT, 'app.json'))) {
-  console.error('用法: node ux-check.mjs --project <工程绝对路径> [--fill 100] [--json]');
+  console.error('用法: node ux-check.mjs --project <工程绝对路径> --out <工程外证据目录> [--fill 100] [--values-file <文件>] [--json]');
+  process.exit(2);
+}
+const OUT = resolveOutDir(PROJECT, arg('out'));
+if (OUT.error) {
+  console.error(OUT.error);
   process.exit(2);
 }
 
-const log = AS_JSON ? () => {} : (s) => console.log(s);
+// --json 时 stdout 只留给最终 JSON，进度一律写 stderr
+const log = AS_JSON ? (s) => console.error(s) : (s) => console.log(s);
 const readText = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return ''; } };
 
 log('· 检查环境');
 const env = envStatus();
 if (!env.cli) { console.error('wechatide CLI 不可用，需先安装微信开发者工具'); process.exit(2); }
-if (!env.login) { console.error('开发者工具未登录，需先扫码：wechatide login --type image'); process.exit(2); }
+if (!env.login) { console.error(loginProblem(env)); process.exit(2); }
 log('  就绪（用户: ' + (env.user || '?') + '）');
 
 // —— 静态：逐页找「用户能完成的任务」和「危险操作」
@@ -78,9 +85,6 @@ const r = auditUx(PROJECT, plan, env.bin, log, {
   backupDir: arg('backup-dir'),
 });
 
-const outDir = path.join(PROJECT, '.mp-autocheck');
-fs.mkdirSync(outDir, { recursive: true });
-const outFile = path.join(outDir, 'ux-report.json');
 const report = {
   project: PROJECT,
   at: new Date().toISOString(),
@@ -100,7 +104,8 @@ const report = {
     '危险操作只做静态判定（有没有二次确认代码），永不点击。',
   ],
 };
-fs.writeFileSync(outFile, JSON.stringify(report, null, 2));
+const outFile = saveReport(PROJECT, OUT.dir, 'ux-report', report);
+log('· 证据已保存: ' + outFile);
 
 if (AS_JSON) {
   console.log(JSON.stringify(report, null, 2));
@@ -136,7 +141,7 @@ console.log(
     (r.stats.notUnique ? '；因元素不唯一跳过 ' + r.stats.notUnique + ' 个' : '')
 );
 console.log(' 数据还原：' + (r.stats.restored ? '全部本地键和值核验一致' : '还原失败，请手动检查'));
-console.log(' 明细: ' + path.relative(process.cwd(), outFile));
+console.log(' 证据: ' + outFile);
 console.log('══════════════════════════════════════════════════════════');
 
 process.exit(r.incomplete ? 2 : r.issues.some((i) => i.level === 'P1') ? 1 : 0);

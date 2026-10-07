@@ -16,13 +16,14 @@ function mock(options={}) {
     if (options.timeout) throw new Error('timeout waiting for automator response');
     if (tool==='automation_navigate') { route=args[args.indexOf('--url')+1].slice(1); return {ok:true,result:{success:true}}; }
     if (tool==='simulator_screenshot') return {ok:true,result:{success:true}};
+    if (tool==='automation_runtime_info') return {ok:true,result:{success:true,currentPage:{pageId:options.stalePage?2:1,path:route}}};
     const fn=args[args.indexOf('--fn-source')+1];
     let data;
     if (!fn.includes('createSelectorQuery')) data={window:options.window || win,device:{model:'mock'},route:options.startRoute};
     else {
       snapshots++;
       const left=options.unstable?snapshots:0;
-      data={route:options.wrongRoute?'other':route,window:options.pageHeight && route==='two'?{...win,windowHeight:480}:win,rects:options.missing?[[]]:[
+      data={route:options.wrongRoute?'other':route,nativeId:1,window:options.pageHeight && route==='two'?{...win,windowHeight:480}:win,rects:options.missing?[[]]:[
         [{left,top:0,right:320,bottom:100,width:320,height:100}],
         [{left:10,top:10,right:options.overflow?350:100,bottom:60,width:90,height:50}]]};
     }
@@ -35,8 +36,8 @@ async function test(name,fn){await fn();passed++;console.log('✓ '+name);}
 const opts={expectedSize:{width:320,height:568}};
 await test('最小检查每页一次采集，不编译、刷新或正常截图',async()=>{
  const m=mock();const r=await scanUI(root,{...opts,...m});
- assert.equal(r.pages.length,2);assert.equal(r.elements,4);assert.equal(m.calls.length,6);
- assert(m.calls.every(c=>['automation_evaluate','automation_navigate'].includes(c.tool)));
+ assert.equal(r.pages.length,2);assert.equal(r.elements,4);assert.equal(m.calls.length,8);
+ assert(m.calls.every(c=>['automation_evaluate','automation_navigate','automation_runtime_info'].includes(c.tool)));
 });
 await test('新机型精测按完整名称匹配，同尺寸旧型号降为最小检查',async()=>{
   const names=['HUAWEI Mate X6外','HUAWEI nova 14 Ultra','HUAWEI Mate 80','HUAWEI Mate 70 Pro','iPhone 15 Pro Max','HUAWEI Pura X Max内'];
@@ -47,15 +48,17 @@ await test('新机型精测按完整名称匹配，同尺寸旧型号降为最�
   for(const group of ['小','中','大'])assert.equal(plan.filter(x=>x.group===group).length,2);
   assert.throws(()=>buildPlan(table.slice(0,-1)),/缺少精测机型/);
 });
-await test('精测核对稳定性并且每页只保留一张截图',async()=>{const m=mock();const r=await scanUI(root,{...opts,...m,mode:'precise'});assert.equal(r.pages.length,2);assert.equal(m.calls.length,10);assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,2);assert(r.pages.every(p=>p.screenshot));});
+await test('精测核对稳定性并且每页只保留一张截图',async()=>{const m=mock();const r=await scanUI(root,{...opts,...m,mode:'precise'});assert.equal(r.pages.length,2);assert.equal(m.calls.length,16);assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,2);assert(r.pages.every(p=>p.screenshot));});
 await test('不同页面内容高度变化不误判为机型切换',async()=>{const m=mock({pageHeight:true});const r=await scanUI(root,{...opts,...m,mode:'precise'});assert(!r.incomplete);assert.equal(r.pages[1].viewport.height,480);});
-await test('已在原页面时不重复导航恢复',async()=>{const m=mock({startRoute:'two'});const r=await scanUI(root,{...opts,...m});assert(r.restored);assert.equal(m.calls.length,6);});
+await test('已在原页面时不重复导航恢复',async()=>{const m=mock({startRoute:'two'});const r=await scanUI(root,{...opts,...m});assert(r.restored);assert.equal(m.calls.length,8);});
 await test('尺寸不匹配时不导航、不套默认尺寸',async()=>{const m=mock({window:{...win,screenWidth:390}});await assert.rejects(()=>scanUI(root,{...opts,...m}),/目标尺寸/);assert.equal(m.calls.length,1);});
 await test('automator持续超时只恢复一次，随后停止',async()=>{const m=mock({timeout:true});const waits=[];await assert.rejects(()=>scanUI(root,{...opts,...m,sleep:async ms=>waits.push(ms)}),/timeout/);assert.equal(m.calls.length,2);assert.deepEqual(waits,[20000]);});
 await test('IDE返回超时后重试成功，后续正常采集',async()=>{const m=mock();let attempts=0;const waits=[];const call=(...args)=>++attempts===1?{ok:false,message:'timeout waiting for automator response'}:m.call(...args);const r=await scanUI(root,{...opts,call,sleep:async ms=>waits.push(ms)});assert.equal(r.elements,4);assert.deepEqual(waits,[20000]);});
 await test('一般错误不等待不重试',async()=>{let calls=0;const waits=[];await assert.rejects(()=>scanUI(root,{...opts,call:()=>{calls++;throw new Error('permission denied');},sleep:async ms=>waits.push(ms)}),/permission denied/);assert.equal(calls,1);assert.equal(waits.length,0);});
 await test('恢复成功后再次超时不重复恢复',async()=>{let calls=0;const waits=[];const m=mock();const call=(...args)=>{calls++;if(calls===1||calls===3)throw new Error('timeout waiting for automator response');return m.call(...args);};await assert.rejects(()=>scanUI(root,{...opts,call,sleep:async ms=>waits.push(ms)}),/timeout/);assert.equal(calls,3);assert.deepEqual(waits,[20000]);});
 await test('错误页面不记为通过，并停止后续页面',async()=>{const m=mock({wrongRoute:true});const r=await scanUI(root,{...opts,...m});assert(r.incomplete);assert.equal(r.elements,0);assert.deepEqual(r.unvisitedPages,['two']);});
+await test('同路径旧页面编号停止采集，不能生成该页截图证据',async()=>{const m=mock({stalePage:true});const r=await scanUI(root,{...opts,...m,mode:'precise'});assert(r.incomplete);assert.equal(r.elements,0);assert.match(r.pages[0].error,/已过期/);assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,0);});
+await test('页面编号查询失败停止采集，不只比较路径',async()=>{const m=mock();const call=(tool,...args)=>tool==='automation_runtime_info'?{ok:false,message:'unavailable'}:m.call(tool,...args);const r=await scanUI(root,{...opts,call});assert(r.incomplete);assert.equal(r.elements,0);assert.deepEqual(r.unvisitedPages,['two']);});
 await test('丢失采集结果不记为零问题通过',async()=>{const m=mock({missing:true});const r=await scanUI(root,{...opts,...m});assert(r.incomplete);assert.equal(r.elements,0);});
 await test('精测布局不稳定时不给通过结论',async()=>{const m=mock({unstable:true});const r=await scanUI(root,{...opts,...m,mode:'precise'});assert(r.incomplete);assert.match(r.pages[0].error,/不稳定/);});
 await test('异常才截图，且截图在工程外',async()=>{const m=mock({overflow:true});const r=await scanUI(root,{...opts,...m});assert(r.totals.P0>0);assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,2);assert(r.pages.every(p=>!p.screenshot.startsWith(root+path.sep)));});

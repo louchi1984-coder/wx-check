@@ -8,13 +8,15 @@
  *      根因指向「长流程里模拟器/automator 的状态」，隔离成独立进程最稳。
  *
  * 用法:
- *   node tap-check.mjs --project <工程绝对路径>
+ *   node tap-check.mjs --project <工程绝对路径> --out <工程外证据目录> [--json]
+ *       只点静态能确定会跳转的入口（导航入口）；业务按钮需另行补测。
  *
- * 结果写到 <工程>/.mp-autocheck/tap-report.json；退出码 0 全部进去过 / 1 有进不去的 / 2 用法或环境错误
+ * 结果独占写入 <out>/tap-report-<时间戳>.json（工程内 .mp-autocheck/tap-report.json 仅为最近一次副本）；--json 时进度走 stderr；退出码 0 全部进去过 / 1 有进不去的 / 2 用法或环境错误
  */
 import fs from 'fs';
 import path from 'path';
-import { envStatus, openWindow, ensureReady } from './lib/wechatide.mjs';
+import { resolveOutDir, saveReport } from './lib/evidence.mjs';
+import { envStatus, loginProblem, openWindow, ensureReady } from './lib/wechatide.mjs';
 import { analyzeNavCost } from './lib/nav-cost.mjs';
 import { auditTap } from './lib/tap-audit.mjs';
 
@@ -27,7 +29,7 @@ const PROJECT = arg('project');
 const AS_JSON = argv.includes('--json');
 
 if (!PROJECT || !fs.existsSync(PROJECT)) {
-  console.error('用法: node tap-check.mjs --project <工程绝对路径> [--json]');
+  console.error('用法: node tap-check.mjs --project <工程绝对路径> --out <工程外证据目录> [--json]');
   process.exit(2);
 }
 if (!fs.existsSync(path.join(PROJECT, 'app.json'))) {
@@ -35,7 +37,14 @@ if (!fs.existsSync(path.join(PROJECT, 'app.json'))) {
   process.exit(2);
 }
 
-const log = AS_JSON ? () => {} : (s) => console.log(s);
+const OUT = resolveOutDir(PROJECT, arg('out'));
+if (OUT.error) {
+  console.error(OUT.error);
+  process.exit(2);
+}
+
+// --json 时 stdout 只留给最终 JSON，进度一律写 stderr
+const log = AS_JSON ? (s) => console.error(s) : (s) => console.log(s);
 
 log('· 检查环境');
 const env = envStatus();
@@ -44,7 +53,7 @@ if (!env.cli) {
   process.exit(2);
 }
 if (!env.login) {
-  console.error('开发者工具未登录，需先扫码：wechatide login --type image');
+  console.error(loginProblem(env));
   process.exit(2);
 }
 log('  就绪（用户: ' + (env.user || '?') + '）');
@@ -72,9 +81,6 @@ const r = auditTap(PROJECT, entries, env.bin, log, {
   tabPages: nav.tabPages || [],
 });
 
-const outDir = path.join(PROJECT, '.mp-autocheck');
-fs.mkdirSync(outDir, { recursive: true });
-const outFile = path.join(outDir, 'tap-report.json');
 const report = {
   project: PROJECT,
   at: new Date().toISOString(),
@@ -84,7 +90,8 @@ const report = {
   incomplete: r.incomplete,
   issues: r.issues,
 };
-fs.writeFileSync(outFile, JSON.stringify(report, null, 2));
+const outFile = saveReport(PROJECT, OUT.dir, 'tap-report', report);
+log('· 证据已保存: ' + outFile);
 
 if (AS_JSON) {
   console.log(JSON.stringify(report, null, 2));
@@ -118,7 +125,7 @@ console.log(
     ' 个' + (r.stats.skipped ? '，跳过 ' + r.stats.skipped + ' 个' : '')
 );
 if (r.stats.resetFailed) console.log(' 注意: 复位到首页连续无响应，本次结论不完整');
-console.log(' 明细: ' + path.relative(process.cwd(), outFile));
+console.log(' 证据: ' + outFile);
 console.log('══════════════════════════════════════════════════════════');
 
 process.exit(r.incomplete ? 2 : r.stats.failed ? 1 : 0);

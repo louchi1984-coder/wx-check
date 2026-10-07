@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { wechatide } from './wechatide.mjs';
+import { assertPageSnapshot } from './page-context.mjs';
 
 const TOUCH_MIN = 44;
 const R = (n) => Math.round(Number(n) * 10) / 10;
@@ -57,7 +58,7 @@ async function pageSnapshot(run, classes) {
     'var ps=getCurrentPages();var p=ps[ps.length-1];var q=wx.createSelectorQuery().in(p);' +
     'var cs=' + JSON.stringify(classes) + ';' +
     'cs.forEach(function(c){q.selectAll("."+c).boundingClientRect();});' +
-    'q.exec(function(r){resolve({route:p.route,window:wx.getWindowInfo(),rects:r});});});}';
+    'q.exec(function(r){resolve({route:p.route,nativeId:p.__wxWebviewId__||p.data.__webviewId__,window:wx.getWindowInfo(),rects:r});});});}';
   return (await run('automation_evaluate', ['--fn-source', fn])).result?.result?.result;
 }
 
@@ -240,6 +241,7 @@ export async function scanUI(project, opts = {}) {
       await run('automation_navigate', ['--action', tabs.includes(page) ? 'switchTab' : 'reLaunch', '--url', '/' + page]);
       async function collect() {
         const data = await pageSnapshot(run, classes);
+        const context = assertPageSnapshot(data, await run('automation_runtime_info', ['--action', 'currentPage']));
         if (data?.route !== page) throw new Error('当前页面与目标不一致');
         if (!['screenWidth', 'screenHeight', 'pixelRatio', 'windowWidth'].every(k => data.window?.[k] === info.window[k])) {
           throw new Error('检测中途屏幕尺寸改变');
@@ -247,7 +249,7 @@ export async function scanUI(project, opts = {}) {
         if (!Array.isArray(data.rects) || data.rects.length !== classes.length || data.rects.some(x => !Array.isArray(x))) {
           throw new Error('页面元素采集不完整');
         }
-        return { rects: Object.fromEntries(classes.map((c, i) => [c, data.rects[i]])), window: data.window };
+        return { rects: Object.fromEntries(classes.map((c, i) => [c, data.rects[i]])), window: data.window, context };
       }
       let snapshot = await collect();
       if (mode === 'precise') {
@@ -265,6 +267,7 @@ export async function scanUI(project, opts = {}) {
       entry = { page, classes: classes.length, elements: checked.uniq, issues: checked.issues,
         viewport: { width: snapshot.window.windowWidth, height: snapshot.window.windowHeight },
         touchSmall: checked.touchSmall, rects, dataState: pageData[page]?.state || 'unknown' };
+      entry.context = snapshot.context;
       report.elements += checked.uniq;
       touchAll.push(...checked.touchSmall);
       report.emptyClasses[page] = classes.filter(c => !rects[c].length).length;
@@ -284,6 +287,8 @@ export async function scanUI(project, opts = {}) {
       fs.mkdirSync(shotDir, { recursive: true });
       try {
         const file = path.join(shotDir, page.replace(/\//g, '_') + '.png');
+        if (entry.error) throw Error('页面核对或采集失败，未将截图作为该页证据');
+        assertPageSnapshot({ nativeId: entry.context.nativeId, route: page }, await run('automation_runtime_info', ['--action', 'currentPage']));
         await run('simulator_screenshot', ['--path', file]);
         entry.screenshot = file;
       } catch (e) { entry.screenshotError = e.message; }
@@ -301,6 +306,7 @@ export async function scanUI(project, opts = {}) {
     try {
       await run('automation_navigate', ['--action', tabs.includes(first.route) ? 'switchTab' : 'reLaunch', '--url', '/' + first.route]);
       const restored = await pageSnapshot(run, []);
+      assertPageSnapshot(restored, await run('automation_runtime_info', ['--action', 'currentPage']));
       report.restored = restored?.route === first.route;
       if (!report.restored) report.restoreError = '结束后页面未回到原页面';
     } catch (e) { report.restored = false; report.restoreError = e.message; }

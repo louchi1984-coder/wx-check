@@ -21,7 +21,8 @@ function fixture(options = {}) {
     if(message.method==='App.callFunction'){
       const info=list[options.stale?0:state.current].info;
       result={result:{window:{screenWidth:info.screenWidth,screenHeight:info.screenHeight,pixelRatio:info.dpr,windowWidth:info.screenWidth,windowHeight:500},device:{model:info.model},route:state.route}};
-    }else if(message.method==='App.callWxMethod'){state.route=message.params.args[0].url.slice(1);result={};}
+    }else if(message.method==='App.getCurrentPage'){result={pageId:9,path:state.route};}
+    else if(message.method==='App.callWxMethod'){state.route=message.params.args[0].url.slice(1);result={};}
     else throw Error('unexpected method');
     return JSON.stringify({id:message.id,result});
   } };
@@ -29,6 +30,10 @@ function fixture(options = {}) {
 }
 let passed=0;
 async function test(name,fn){await fn();passed++;console.log('✓ '+name);}
+await test('运行中机型通道支持读取自动化当前页面编号',async()=>{
+ const f=fixture(),s=await createLiveDeviceSession(f.project,f);
+ try{const r=await s.call('automation_runtime_info',['--action','currentPage']);assert.deepEqual(r.result.currentPage,{pageId:9,path:'home'});}finally{s.close();}
+});
 await test('连续切换复用连接，只调用机型动作；恢复原机型与页面',async()=>{
   const f=fixture(),s=await createLiveDeviceSession(f.project,f);
   try{

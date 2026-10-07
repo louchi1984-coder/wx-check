@@ -12,8 +12,12 @@
  * B 才能判断「空 class」是正常的空列表还是真的没渲染完。
  *
  * 用法:
- *   node selfcheck.mjs --project <工程绝对路径> [--only config|runtime|compile|content|ui|tap] [--page <页面>]
- *                      [--device <机型>] [--screenshot] [--json]
+ *   node selfcheck.mjs --project <工程绝对路径> --out <工程外证据目录> [--only config|runtime|compile|content|diagnostics|ui]
+ *                      [--page <页面>] [--device <机型>] [--screenshot] [--json]
+ *
+ * 每次运行把原始报告独占写入 <out>/report-<时间戳>.json，不覆盖旧证据；
+ * 工程内 .mp-autocheck/report.json 只是“最近一次”副本。--json 时 stdout 只有 JSON，进度走 stderr。
+ * 点击测试不在本入口：用 tap-check.mjs。
  *
  * 注意：一次运行**只操作 --project 指定的这一个工程**。不要为了「顺手验证」而对另一个工程
  * 发起操作——那会在开发者工具里多开一个模拟器，用户看到的是「任务跑到一半换了目标」。
@@ -22,14 +26,14 @@
  */
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 import { spawnSync } from 'child_process';
-import { envStatus, openWindow, ensureReady } from './lib/wechatide.mjs';
+import { envStatus, loginProblem, loginLabel, openWindow, ensureReady } from './lib/wechatide.mjs';
 import { auditConfig } from './lib/config-audit.mjs';
 import { auditRuntime } from './lib/runtime-audit.mjs';
 import { auditCompile } from './lib/compile-audit.mjs';
 import { auditContent } from './lib/content-audit.mjs';
-import { auditTap } from './lib/tap-audit.mjs';
+import { resolveOutDir, saveReport } from './lib/evidence.mjs';
+import { auditDiagnostics } from './lib/diagnostics-audit.mjs';
 import { scanUI } from './lib/ui-scan.mjs';
 
 const argv = process.argv.slice(2);
@@ -41,16 +45,30 @@ const has = (n) => argv.includes('--' + n);
 
 const PROJECT = arg('project');
 const ONLY = String(arg('only', '') || '');
+const MODULES = ['config', 'runtime', 'compile', 'content', 'diagnostics', 'ui'];
 const PAGE = String(arg('page', '') || '');
 const AS_JSON = has('json');
 const SHOT = has('screenshot');
-// 真点击是写操作（会真的点按钮、切页面），必须显式开启
-const TAP = has('tap') || ONLY === 'tap';
 // 模拟器机型：'320'（按宽度）/ '320x568' / 'iPhone 5' / 'iPad'；换机型需关窗改配置再开窗
 const DEVICE = String(arg('device', '') || '');
 
+const USAGE = '用法: node selfcheck.mjs --project <小程序工程绝对路径> --out <工程外证据目录> [--only ' + MODULES.join('|') + '] [--debug-port <端口，默认9223>] [--page <页面>] [--device <机型>] [--screenshot] [--json]';
 if (!PROJECT || !fs.existsSync(PROJECT)) {
-  console.error('用法: node selfcheck.mjs --project <小程序工程绝对路径> [--only config|runtime|compile|content|ui|tap] [--page <页面>] [--device <机型>] [--screenshot] [--json]');
+  console.error(USAGE);
+  process.exit(2);
+}
+if (has('tap') || ONLY === 'tap') {
+  console.error('本入口不执行点击测试（它只会给提示，不会真点）。请改用：node ' +
+    path.join(path.dirname(process.argv[1] || ''), 'tap-check.mjs') + ' --project <工程> --out <工程外证据目录>');
+  process.exit(2);
+}
+if (ONLY && !MODULES.includes(ONLY)) {
+  console.error('--only 只接受 ' + MODULES.join(' / ') + '，收到: ' + ONLY);
+  process.exit(2);
+}
+const OUT = resolveOutDir(PROJECT, arg('out'));
+if (OUT.error) {
+  console.error(OUT.error + '\n' + USAGE);
   process.exit(2);
 }
 if (PAGE && !/^[A-Za-z0-9_\-/]+$/.test(PAGE)) {
@@ -68,7 +86,7 @@ if (DEVICE) {
   }
   const entry = path.join(path.dirname(process.argv[1]), 'ui-check.mjs');
   const args = [entry, '--project', PROJECT, '--device', DEVICE,
-    '--out', arg('out', path.join(os.tmpdir(), 'miniprogram-ui-' + process.pid))];
+    '--out', OUT.dir];
   if (PAGE) args.push('--page', PAGE);
   if (SHOT) args.push('--screenshot');
   const result = spawnSync(process.execPath, args, { stdio: 'inherit' });
@@ -76,16 +94,17 @@ if (DEVICE) {
 }
 
 const want = (m) => !ONLY || ONLY === m;
-const log = (s) => console.log(s);
+// --json 时 stdout 只留给最终 JSON，进度一律写 stderr
+const log = AS_JSON ? (s) => console.error(s) : (s) => console.log(s);
 const report = { project: PROJECT, at: new Date().toISOString(), env: null, modules: {}, totals: { P0: 0, P1: 0, autofix: 0 } };
 
 // ── 环境 ──────────────────────────────────────────────────────
 log('· 检查环境');
 const env = envStatus();
-report.env = { cli: env.cli, bin: env.bin, login: env.login, user: env.user, loginExpired: env.loginExpired };
+report.env = { cli: env.cli, bin: env.bin, login: env.login, user: env.user, loginExpired: env.loginExpired, error: env.error };
 const runtimeReady = env.cli && env.login;
 if (!env.cli) log('  wechatide CLI 不可用 —— 界面与运行时模块将跳过，仅跑静态体检');
-else if (!env.login) log('  开发者工具未登录 —— 界面与运行时模块将跳过，仅跑静态体检');
+else if (!env.login) log('  ' + loginProblem(env) + '；依赖运行的检查跳过，仅做静态检查');
 else log('  就绪（用户: ' + (env.user || '?') + '）');
 
 // ── A 工程配置与资源 ─────────────────────────────────────────
@@ -103,9 +122,9 @@ if (want('config')) {
 let simulatorReady = runtimeReady;
 let skipReason = '';
 if (!env.cli) skipReason = 'wechatide CLI 不可用，需先安装微信开发者工具';
-else if (!env.login) skipReason = '开发者工具未登录，需先扫码（wechatide login --type image）';
+else if (!env.login) skipReason = loginProblem(env);
 
-if ((want('ui') || want('runtime') || want('compile') || want('content')) && runtimeReady) {
+if ((want('ui') || want('runtime') || want('compile') || want('content') || want('diagnostics')) && runtimeReady) {
   try {
     openWindow(PROJECT, env.bin);
   } catch (e) {
@@ -225,32 +244,31 @@ if (want('ui')) {
   }
 }
 
+// ── 开发者工具诊断面板（构建 / 代码质量 / 调试器 / 问题 / 输出 / 调试控制台 / 终端）──────
+// 需要本机调试通道；读不到的面板逐项标“未覆盖”并写明原因，绝不按“无问题”处理。
+if (want('diagnostics')) {
+  log('· 模块 H 开发者工具诊断面板');
+  const port = Number(arg('debug-port', '9223'));
+  try {
+    const r = auditDiagnostics(PROJECT, { outDir: OUT.dir, port, runtime: report.modules.runtime });
+    report.modules.diagnostics = r;
+    log('  已检查 ' + r.stats.checked + ' / 部分覆盖 ' + r.stats.partial + ' / 未覆盖 ' + r.stats.uncovered + ' 个面板' +
+      (r.unavailable ? '（诊断读取失败：' + r.reason + '）' : ''));
+  } catch (e) {
+    report.modules.diagnostics = { error: e.message, unavailable: true, reason: e.message, panels: [], issues: [], stats: {} };
+    log('  诊断读取异常: ' + String(e.message).slice(0, 160));
+  }
+}
+
 // 单项检测只报告本轮实际执行的模块；不混入旧证据；历史报告由执行者另存。
+// ran：本轮真正执行（含跳过但有结论说明）的模块，供报告校验，避免混入旧结果
+report.ran = MODULES.filter((m) => report.modules[m]);
 if (ONLY) {
   report.partial = true;
   report.only = ONLY;
 }
 
-// ── G 点击测试（写操作，本入口不执行，只提示） ─────────────
-// 为什么本入口不执行它：
-//   ① 它属写操作（真的点按钮、切页面），跟一堆只读采集混在一起不合适；
-//   ② 实测把它接在本流程尾部时，页面导航调用会无响应、把整轮拖住（同一段调用
-//      在独立进程里跑却是正常的）。隔离成独立命令最稳，也保证本报告一定能落盘。
-if (want('tap')) {
-  report.modules.tap = {
-    ran: false,
-    skipped: true,
-    reason: '点击测试属写操作，需用独立命令执行（本入口不执行）',
-    issues: [],
-    hops: [],
-    stats: {},
-  };
-  log('· 模块 G 点击测试 —— 本入口不执行（它属写操作，会真的点按钮、切页面）');
-  log('  需要时单独跑这一条，结果写到 <工程>/.mp-autocheck/tap-report.json：');
-  log('    node ' + path.join(path.dirname(process.argv[1] || ''), 'tap-check.mjs') + ' --project ' + PROJECT);
-}
-
-for (const m of ['config', 'runtime', 'compile', 'content', 'tap']) {
+for (const m of ['config', 'runtime', 'compile', 'content', 'diagnostics']) {
   const mod = report.modules[m];
   if (!mod || !mod.issues) continue;
   report.totals.P0 += mod.issues.filter((i) => i.level === 'P0').length;
@@ -263,9 +281,8 @@ if (report.modules.ui && report.modules.ui.totals) {
 }
 
 // ── 落盘 ─────────────────────────────────────────────────────
-const outDir = path.join(PROJECT, '.mp-autocheck');
-fs.mkdirSync(outDir, { recursive: true });
-fs.writeFileSync(path.join(outDir, 'report.json'), JSON.stringify(report, null, 2));
+const savedFile = saveReport(PROJECT, OUT.dir, 'report', report);
+log('· 证据已保存: ' + savedFile);
 
 if (AS_JSON) {
   console.log(JSON.stringify(report, null, 2));
@@ -278,7 +295,7 @@ const hr = () => console.log(L);
 console.log('\n══════════════════════════════════════════════════════════');
 console.log(' 小程序自检报告');
 console.log(' 工程: ' + report.project);
-console.log(' 环境: wechatide ' + (env.cli ? '可用' : '不可用') + ' / 登录 ' + (env.login ? '已登录' : '未登录') +
+console.log(' 环境: wechatide ' + (env.cli ? '可用' : '不可用') + ' / 登录 ' + loginLabel(env) +
   '   模块: ' + Object.keys(report.modules).join(' + '));
 console.log('══════════════════════════════════════════════════════════');
 
@@ -341,28 +358,6 @@ if (cp) {
   }
 }
 
-const tp = report.modules.tap;
-if (tp) {
-  console.log('\n── 模块 G · 点击测试 ─────────────────────────────────');
-  if (tp.skipped) console.log('   未执行 —— ' + tp.reason);
-  else if (tp.error) console.log('   ! ' + tp.error);
-  else {
-    for (const h of tp.hops || []) {
-      if (h.skipped) {
-        console.log('   ' + h.to.padEnd(26) + '跳过：' + h.skipped);
-        continue;
-      }
-      console.log('   从 ' + h.from + ' 点「' + h.text + '」');
-      console.log('        → ' + h.to + '   ' + (h.ok ? '✔ 真的进去了' : '✘ 没进去') +
-        '（点 ' + h.actualTaps + ' 下，页栈 ' + h.stackDepth + ' 层' +
-        (h.stackDepth > 1 ? '，回首页约 ' + (h.stackDepth - 1) + ' 下' : '') + '）');
-      if (h.brokeAt) console.log('        ' + h.brokeAt);
-    }
-    if (!tp.issues.length) console.log('   实测：所有入口都能真的点进去');
-    else printIssues(tp.issues);
-  }
-}
-
 const ct = report.modules.content;
 if (ct) {
   console.log('\n── 模块 E · 读内容 ─────────────────────────────────────');
@@ -375,6 +370,17 @@ if (ct) {
     if (!ct.issues.length) console.log('   没有文字被截断，也没发现引用错的字段');
     printIssues(ct.issues);
   }
+}
+
+const dg = report.modules.diagnostics;
+if (dg) {
+  console.log('\n── 模块 H · 开发者工具诊断面板 ─────────────────────────');
+  if (dg.error) console.log('   ! ' + dg.error);
+  for (const p of dg.panels || []) {
+    console.log('   ' + p.name.padEnd(8, '　') + ' ' + p.status + ' —— ' + p.reason);
+  }
+  if (dg.rawFile) console.log('   原始诊断: ' + dg.rawFile);
+  printIssues(dg.issues || []);
 }
 
 const u = report.modules.ui;
@@ -411,7 +417,7 @@ if (u) {
 
 console.log('');
 hr();
-const skippedMods = ['config', 'runtime', 'compile', 'content', 'ui', 'tap'].filter((m) => {
+const skippedMods = MODULES.filter((m) => {
   const mod = report.modules[m];
   return mod && (mod.skipped || mod.unavailable);
 });
@@ -420,7 +426,7 @@ console.log(' 合计: P0 ' + report.totals.P0 + ' 处（必须修）    P1 ' + r
 if (skippedMods.length) {
   console.log(' 注意: 有 ' + skippedMods.length + ' 个模块没给出结论（' + skippedMods.join('、') + '），以上结论不完整');
 }
-console.log(' 明细: ' + path.relative(process.cwd(), path.join(outDir, 'report.json')));
+console.log(' 证据: ' + savedFile);
 hr();
 
 process.exit(report.totals.P0 ? 1 : 0);

@@ -13,7 +13,7 @@ function storage(initial){const data=new Map(Object.entries(initial));let failWr
 try {
 test('条件按钮未出现时不点击、不报程序缺陷',()=>{let n=0;assert.match(tapElement('/fixture',null,'.confirm',()=>{n++;return {result:{elements:[]}}}).skipped,/前置|条件|出现/);assert.equal(n,1)});
 test('多个同名按钮时不猜测点击',()=>assert.ok(tapElement('/fixture',null,'.confirm',()=>({result:{elements:[{},{}]}})).skipped));
-test('唯一按钮才执行真实点击',()=>{let n=0;assert.equal(tapElement('/fixture',null,'.confirm',()=>++n===1?{result:{elements:[{}]}}:{result:{success:true}}).ok,true);assert.equal(n,2)});
+test('唯一按钮且当前页面一致才执行真实点击',()=>{let taps=0;assert.equal(tapElement('/fixture',null,'.confirm',tool=>tool==='automation_page_action'?{result:{elements:[{}]}}:tool==='automation_evaluate'?{result:{result:{nativeId:1,route:'home'}}}:tool==='automation_runtime_info'?{result:{currentPage:{pageId:1,path:'home'}}}:(taps++,{result:{success:true}})).ok,true);assert.equal(taps,1)});
 test('工具失败记录未覆盖',()=>assert.ok(tapElement('/fixture',null,'.confirm',()=>{throw Error('timeout')}).skipped));
 test('恢复全部原键、值及删除新增键',()=>{const m=storage({a:{x:1},b:[1,2]});const g=createStorageGuard('/fixture',null,{call:m.call,backupDir:path.join(root,'normal')});m.data.set('a',9);m.data.delete('b');m.data.set('test',4);assert.equal(g.restore(),true);assert.deepEqual(Object.fromEntries(m.data),{a:{x:1},b:[1,2]});assert.ok(fs.existsSync(g.backupFile))});
 test('空存储备份是合法成功结果',()=>{const m=storage({});const g=createStorageGuard('/fixture',null,{call:m.call,backupDir:path.join(root,'empty')});m.data.set('new',1);assert.equal(g.restore(),true);assert.equal(m.data.size,0)});

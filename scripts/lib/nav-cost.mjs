@@ -37,6 +37,18 @@ function attr(attrs, name) {
 }
 
 /**
+ * 解析 class 属性里的静态类名，用于拼 CSS 选择器。
+ * {{…}} 表达式整体先摘掉（表达式内部有空格、引号，不能按空白切分）；
+ * 带表达式的类名（如 s-{{item.state}}）或含非常规字符的类名无法当选择器，丢弃并标记 dynamic。
+ * 丢弃后选择器可能命中多个元素（列表项），由调用方的“唯一命中”检查兜底，不会乱点。
+ */
+export function classTokens(raw) {
+  const all = String(raw || '').replace(/\{\{[\s\S]*?\}\}/g, '\u0000').split(/\s+/).filter(Boolean);
+  const classes = all.filter((t) => /^[A-Za-z0-9_-]+$/.test(t));
+  return { classes, dynamic: classes.length !== all.length };
+}
+
+/**
  * 抽出一页里所有可点元素：handler 名、class 列表、展示文字。
  * 文字取标签到下一个 '<' 之间的内容，插值表达式折成 '…'。
  */
@@ -58,7 +70,8 @@ export function tapTargets(wxml) {
     out.push({
       tag: m[1],
       handler: h[1],
-      classes: attr(attrs, 'class').split(/\s+/).filter(Boolean),
+      classes: classTokens(attr(attrs, 'class')).classes,
+      dynamicClass: classTokens(attr(attrs, 'class')).dynamic,
       text: text.length > 16 ? text.slice(0, 16) + '…' : text,
     });
   }
