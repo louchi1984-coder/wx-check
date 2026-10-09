@@ -34,7 +34,28 @@ wechatide -c <已授权clientName> compile_wxml --project <工程绝对路径> -
 wechatide -c <已授权clientName> compile_wxss --project <工程绝对路径> --file-path <相对miniprogramRoot的WXSS路径>
 ```
 
-编译接口读取的是编译产物摘要，不能把指定文件入口或返回success直接当整页预览、整包构建通过。原生弹窗的业务确认／取消分支可在授权范围内用官方mock配合真实按钮触发核验，不能用直接调用处理函数代替点击；模拟结果与原生界面实际观察分开报告。
+编译接口读取的是编译产物摘要，不能把指定文件入口或返回success直接当整页预览、整包构建通过。
+
+## 原生弹窗与系统面板
+
+先区分页面内弹层与wx.showModal、showActionSheet、showToast等原生提示。页面内弹层按实际元素点击；WXML选择器找不到原生按钮，只说明该定位方式不适用，不直接判定功能无法测试。
+
+1. 在没有相关mock的状态下，从真实页面入口触发，观察提示文字、按钮及遮挡。先核对截图是否包含原生层；不包含时用当前获准的开发者工具窗口截图。能使用宿主界面操作时，根据实际画面或可访问性信息点确认、取消或具体选项；不猜坐标，不把仅执行截图当成已经看见。删除、清空等确认操作仍受原有数据授权约束。
+2. 原生界面没有可用的自动操作方式，或用户要求不用GUI时，可用官方automation_wx_api模拟返回值，继续验证业务分支。仅模拟当前任务需要的API，每个分支从相应前置状态开始，安装mock后实际点击页面入口，核对是否触发该API及最终数据、请求或页面结果。mock安装成功不等于分支已执行；不直接调用业务函数，也不自己改写wx接口。
+3. 确认和取消分别测。showModal的取消返回是confirm:false、cancel:true，不是接口失败；showActionSheet的选项及取消返回按当前API说明核对。提示类showToast/showLoading看实际显示和消失，不用模拟成功证明提示出现。导出／分享面板与文件产物分别验证，模拟分享成功不能证明实际发送或文件正确。
+4. 分支结束或中途异常都对本轮模拟过的API执行restore，保存返回并以可用的非破坏性观察核对恢复。恢复失败或无法核实时，停止依赖该API的后续测试并说明残留风险，按已有授权处理；不为检查恢复再次执行删除，不自动刷新或重启。
+
+示例：仅验证showModal的取消分支，入口选择器由当前工程决定，三个命令依次执行；中途失败也必须执行最后的restore。确认分支改为confirm:true、cancel:false，并先满足其实际副作用的授权与保护条件。
+
+```bash
+wechatide -c <已授权clientName> automation_wx_api --project <工程绝对路径> --action mock --method showModal --result '{"errMsg":"showModal:ok","confirm":false,"cancel":true}'
+wechatide -c <已授权clientName> automation_element_action --project <工程绝对路径> --action tap --selector <实际入口选择器>
+wechatide -c <已授权clientName> automation_wx_api --project <工程绝对路径> --action restore --method showModal
+```
+
+JSON引号处理随当前shell核对，必要时把返回值保存到工程外JSON文件并用--result-file传入；参数以当前命令帮助为准。
+
+报告分别写“弹窗实际显示与操作”和“确认／取消等业务分支及最终结果”。例如：“取消分支通过模拟返回值验证，原有记录未变化；原生弹窗的显示和手动点击尚未验证。”界面缺口不抹掉已取得的业务证据，也不能把模拟分支称为整段真实操作已完成；需要实际界面补测时说明具体动作，可请用户操作并核对后续结果，不让其阻塞无关任务。
 
 ## IDE面板与接口不能混为一谈
 
