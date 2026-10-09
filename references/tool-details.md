@@ -1,38 +1,39 @@
-# 工具细节与采集限制
+# 辅助工具
 
-本文件解释现有脚本的能力，不能替代SKILL.md的执行步骤或reporting.md的交付要求。历史环境记录不保证当前机器行为，实际结果以本轮证据和当前代码为准。
+只保留重复的工具操作。代码判断、交互定位、表单填写与最终业务结果由执行者结合当前工程和官方接口完成，不依赖旧工程选择器或场景文件。
 
-## 命令与连接
+| 工具 | 用途 | 边界 |
+| --- | --- | --- |
+| prepare-debug-channel.mjs | 检查实际端口、工程窗口，授权后准备通道 | 按[通道说明](debug-channel.md)，失败不循环重启 |
+| check-debug-channel.mjs | 独立只读复查通道 | 不登录、不打开工程 |
+| read-ide-diagnostics.mjs | 保存构建、代码质量、问题及输出原始证据 | 按[诊断说明](official-tool-skill.md)核对范围，空队列不证明无问题 |
+| ui-check.mjs | 同窗口批量切机型、读取尺寸／矩形、保存截图及恢复 | 按[UI说明](ui-batch.md)；截图仍须读图，几何采集不等于完整UI测试 |
+| launch-debug-channel.mjs | 准备入口的底层启动器 | 普通测试不单独调用 |
 
-- selfcheck.mjs不带--only时依次运行配置、运行、编译、内容和UI检查；该组合入口会提前检测UI，因此本skill的分项流程不使用它。代码测试分别运行config、compile、runtime、content，逐次保存原始报告，UI使用独立ui-check.mjs。
-- 保留已授权clientName；技能改名不代表更换调用身份。wechatide.mjs同步调用使用spawnSync和临时输出文件，并设置进程超时；历史输出管道挂住的记录不能解释成当前所有超时都无效。
-- IDE自身返回“timeout waiting for automator response”和调用方进程超时是不同故障。UI扫描只对前者恢复一次，等待20秒后重试；每轮扫描最多一次。失败仍保留原错误，不算应用缺陷或检测通过。
-- 调用前核对目标窗口及模拟器就绪；页面实例与实际webview不一致时停止业务操作。刷新、重开及首次调试通道授权按execution.md，不自动清认证或重启。
-- ensureReady可刷新并探测模拟器，但刷新成功不证明编译成功；其名义90秒不是包含刷新和所有阻塞调用的严格总时限。UI批量切换使用已有运行状态，不逐机型刷新、编译或重开窗口。
+## 调用前
 
-## 编译与返回结构
+下文及各参考文件的`node scripts/...`命令从skill目录执行；在其他目录调用时，改用脚本绝对路径。需要能运行ES模块及内置WebSocket的Node运行时（现有CDP工具要求Node 22或更新），先核对当前可用运行时，不把缺少运行时当连接失败。
 
-- compile_wxml和compile_wxss的file-path可能触发整工程编译，不能将所有错误归到指定入口文件。每种类型只调用一次，用实际报错和parseErrorFiles定位真实文件；未给文件名时只报整体错误。
-- WXML/WXSS成功不等于JS、npm或整包构建成功。AppID或全局配置错误导致无法编译时记录阻塞，不制造多个文件缺陷。build_npm会写构建产物，未获授权时只报告缺少依赖产物。
-- CLI输出可能包含前后日志，用括号配平提取完整JSON；退出码0仍须检查ok及result.success。返回结构依工具而异，不猜嵌套层级；用当前帮助和实际返回核对。历史记录：page getData在result.data，element text的result可直接是字符串，size在result.width/height。不同版本仍需确认。
+官方调用统一用`wechatide -c <已授权clientName> <工具名> <参数>`。辅助脚本调用CLI时，沿用同一身份：设置WECHATIDE_CLIENT为已授权名称（默认miniprogram-autocheck），WECHATIDE_BIN为当前官方wechatide路径，不混用旧cli。UI机型目录找不到时设置实际WECHATIDE_DATA_DIR；批量UI在默认macOS安装之外须设置实际WECHATIDE_MODULES_DIR，诊断读取器则会先从窗口地址发现模块目录。环境变量在当前执行进程生效；不同工具调用不一定保留上一条命令的export。
 
-## UI采集
+## 参数与结果
 
-- 当前UI几何扫描按WXML的class查询，裸容器可能无法采集。按矩形去重并保留全部class，避免重复计数及错误定位样式。
-- 脚本主要判断横向溢出和点击区域大小；重叠、裁切、遮挡、空间利用、文字和卡片比例仍须读图及必要动态检查。脚本不自动判断视觉感受，不等于执行者不需要读图。
-- 44×44是当前脚本使用的点击区域建议阈值，命中不等于功能不能用；根据实际影响给“建议优化”或“待确认”，不能机械决定修复。
-- 同一代码版本的静态文字检测仅提供线索，不能证明所有机型无截断。ellipsis量宽历史方案只看class首实例且字体可能不同，多行裁切不一定可识别；按本轮截图和必要状态补查。
-- 单页整批boundingClientRect采集；精测再采一次核对稳定。当前ui-scan不采用历史“每8个class分批、空元素按比例固定等待”的方案，不据旧记录要求额外等待。
-- 使用wx.getWindowInfo，避免给被测应用注入已废弃API告警。style属性用CSS连字符名称。scrollWidth只适用于支持的组件，不能泛用作文字截断依据。
-- 空class可能是条件渲染或合法空态，也可能是采集遗漏。必须结合页面状态和业务数据判断；零元素、错误页面、尺寸不匹配或采集不稳定不能算通过。UI图片放工程外，最终报告逐张读图并内嵌。
+| 入口 | 必要参数与结果 |
+| --- | --- |
+| prepare-debug-channel / check-debug-channel | --project为工程绝对路径，--port为CDP端口；退出0且工程匹配数为1才可读取。授权启动的额外参数按通道说明；不使用--out |
+| read-ide-diagnostics | --project、--port、--out；--out是工程外JSON文件。保存成功后检查quality、build.scope、problems.available及output各通道的available/complete/truncated，不能把文件生成当所有来源完整读取 |
+| ui-check --plan | --project；不切机型、不截图。未设六款精测时列机型目录，设置后列精测与最小检查计划 |
+| ui-check --matrix | --project、--out工程外目录；先设置六款WECHATIDE_PRECISE_MODELS，端口参数用--debug-port。完成后检查failures、unvisited、restoration及每页采集/截图结果 |
+| ui-check --devices | --project、具体完整机型名、--out；只采集指定机型，不能代替完整matrix计划。--expected-size只检查当前机型，不负责切换 |
 
-## 点击与流程脚本
+UI工具的report.json、report.md和shots目录是采集附件，单项报告由执行者按报告规范整理。低层launch-debug-channel不作为独立测试入口。
 
-- tap-check.mjs仅验证静态可确定的导航入口，结束复位首页。导航处理和生命周期仍可能写数据；补测业务按钮及副作用授权按click-testing.md和execution.md。
-- 路径动态拼接无法确认时不猜；元素需唯一匹配才操作。通过WXML处理器精确匹配方法，不盲扫所有JS方法名。
-- ux-check.mjs是表单辅助：不能自动满足多字段表单，也不能仅凭页面/data变化证明业务成功。原生toast/modal不在页面DOM中；代码存在提示API只属静态证据，实际显示未观察就说明缺口。
-- UX表单辅助入口严格备份到工程外，备份失败不操作，异常进入finally恢复并逐键核对；多字段须提供合法值。该入口只提供表单响应线索，不代替业务结果核验或服务端恢复。
-- 原脚本危险操作仅静态检查；完整流程中的删除、清空、导出等仍应建任务，在明确授权、隔离和可靠保护条件下通过另行设计的场景实际测，不能因为辅助脚本不做就漏掉。
-- 非tab任务需要真实返回栈，先首页再navigateTo；不能用reLaunch造成无法返回后误报业务失败。操作方式自身可能造成假问题，报告前核对测试方法。
+## 调用与判断
 
-统一报告状态、修复建议、问题计数均以reporting.md为准。原始脚本JSON保留原级别和字段，用户报告不直接照搬模块字母或日志术语。
+CLI输出可能夹带日志；按实际完整JSON检查ok及result.success，退出码0不代表业务成功。返回结构与参数查当前官方帮助，不能沿用旧版本猜测。编译入口可能触发整工程编译，错误归属按实际消息，不按调用文件猜测。
+
+开窗后等到具体运行页再操作，已有正确状态直接继续。空字符串输入曾出现返回成功却未清空，必要时用官方元素input事件并读回验证。点击可能改变hover类，定位失败时读取实际元素属性；使用唯一且明确的目标，不修改应用来迁就测试。
+
+UI采集只提供横向溢出、点击区域及稳定性线索，44×44阈值不是自动修复决定。条件渲染、合法空态与遗漏按实际页面判断。重叠、截断、遮挡和布局感受仍由执行者读图及按疑点操作确认。IDE的automator超时与调用进程超时分开；采集只对前者等待20秒重试一次，不重放业务提交。
+
+报告、截图和必要的数据备份保存在工程外。统一报告见[报告规范](reporting.md)，修复与数据保护分别见[修复](repair.md)、[执行条件](execution.md)。

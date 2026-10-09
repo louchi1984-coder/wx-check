@@ -1,51 +1,22 @@
 # 小程序测试 · wx-check
 
-搭配微信开发者工具，检查原生微信小程序：
+搭配微信开发者工具，由执行者理解当前小程序并执行代码测试、点击测试、流程测试，最后做UI测试。换工程重新理解任务，不添加该工程专用测试驱动。
 
-1. **代码测试**：程序有没有写对，编译、运行异常及工具诊断。
-2. **UI 测试**：界面显示是否正常，多机型采集与截图审阅。
-3. **点击测试**：真实点击后是否出现预期反应。
-4. **流程测试**：识别用户任务，核验数据和最终结果。
+解压wx-check.zip到所用工具的skills目录，从[SKILL.md](SKILL.md)开始。先定位当前工具和官方接口、确认连接授权与登录，再选工程及测试号／真实AppID。不限agent、硬件型号或固定工具版本。
 
-不限定 agent、聊天平台或硬件型号。运行测试依赖微信开发者工具；静态检查和离线自检可独立执行。
+通道准备、诊断读取和批量UI是辅助工具，见[工具说明](references/tool-details.md)。Windows使用实际发现的WECHATIDE_BIN、WECHATIDE_DATA_DIR及必要的WECHATIDE_MODULES_DIR；批量切机型按当前目录选择，不固定历史机型。数据操作按已有授权与可靠恢复办法执行。
 
-## 使用
+报告有统一的通俗总结、覆盖和证据要求，见[报告规范](references/reporting.md)。保存截图后必须读图，业务任务须确认最终结果。
 
-下载 Releases 中的 `wx-check.zip`，解压到所用工具支持的 skills 目录；或将本仓库克隆到该目录下的 `wx-check` 文件夹。安装入口遵循所用工具的说明。
+## 维护检查
 
-向执行者说明目标，例如：“使用小程序测试，检查这个工程的代码和 UI。”从 [SKILL.md](SKILL.md) 开始，先定位工具、确认连接授权及登录，再选择项目及测试号／真实 AppID。
+以下仅检查保留的通用工具，不是任何小程序的验收结果：
 
 ```sh
-node scripts/selftest.mjs
-node scripts/selfcheck.mjs --project <源码绝对路径> --only config
-node scripts/ui-check.mjs --project <源码绝对路径> --matrix --out <工程外报告目录>
-```
-
-Windows 使用实际发现的 `WECHATIDE_BIN`、`WECHATIDE_DATA_DIR`、`WECHATIDE_MODULES_DIR`，详见 [跨平台验证](references/platform-validation.md)。批量 UI 需要已授权的本机调试通道，首次开启可能需要重启一次，之后复用同一窗口。
-
-## 判定与修复
-
-报告区分通过、失败、部分覆盖及未覆盖。截图保存后仍需读图；保存弹窗不能代替落库与重读验证。安装、认证及用户数据写入／删除／清空／导出前须确认授权范围。支持单项修复与完整结果闭环，见 [修复流程](references/repair.md)。
-
-## 验证范围
-
-微信开发者工具 Stable `2.02.2608080`、内置 skill `0.3.11` 在 Mac 与 Windows 上实测。Windows 已验证 CLI、授权登录、真实编译、43款机型采集、6款精测截图审阅及两款主流机型非数据点击。完整诊断面板及数据写入／删除／清空／导出流程尚未完整验证，不宣称 Windows 四类检测全部通过。
-
-本轮登录状态、准备等待和页面核对修正已在Mac实跑。新版196项自检已在Windows实机通过；Windows官方接口明确返回登录过期，skill正确停止。登录后的实际点击、输入、准备等待和页面采集尚未验证。
-
-当前源文件版离线自检共196项（10个脚本）：
-
-```sh
-node scripts/selftest.mjs
-node scripts/device-selftest.mjs
+node scripts/debug-channel-selftest.mjs
+node scripts/diagnostics-selftest.mjs
 node scripts/device-live-selftest.mjs
 node scripts/ui-batch-selftest.mjs
-node scripts/interaction-selftest.mjs
-node scripts/evidence-selftest.mjs
-node scripts/diagnostics-selftest.mjs
-node scripts/report-lint-selftest.mjs
-node scripts/tap-static-selftest.mjs
-node scripts/runtime-selftest.mjs
 ```
 
-自检夹具运行时在系统临时目录生成并清理；发布包不包含 `.wxml`、`.wxss`。内部机型切换接口与工具版本有关，其他版本需重新验证。
+夹具仅用于模拟协议与失败边界，运行时在临时目录创建；发布包不含业务工程、旧测试场景或历史验证报告。内部接口升级后按能力核验，真实工程与Windows运行情况须另外实测。

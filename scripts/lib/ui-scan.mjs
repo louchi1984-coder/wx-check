@@ -1,5 +1,5 @@
 /**
- * 模块 B：界面布局体检（需要开发者工具已打开项目且已登录）
+ * UI几何与截图采集（需要开发者工具已打开项目且已登录）
  *
  * 自动读 app.json 得到全部页面（含分包）→ 逐页导航 → 静态提取 wxml 中的 class →
  * 运行时整页采集 class 矩形 → 按几何规则判定客观缺陷。
@@ -252,14 +252,21 @@ export async function scanUI(project, opts = {}) {
         return { rects: Object.fromEntries(classes.map((c, i) => [c, data.rects[i]])), window: data.window, context };
       }
       let snapshot = await collect();
+      let layoutSamples = 1;
       if (mode === 'precise') {
-        const second = await collect();
         const signature = r => JSON.stringify(groupByElement(r).map(({el,classes}) =>
           [classes, el.left, el.top, el.right, el.bottom]));
-        if (!sameWindow(snapshot.window, second.window) || signature(snapshot.rects) !== signature(second.rects)) {
-          throw new Error('两次布局不稳定，需要稍后重测');
+        const deadline = Date.now() + 2000;
+        let stable = false;
+        for (let attempt = 0; attempt < 20; attempt++) {
+          await settle(100);
+          const second = await collect();
+          layoutSamples++;
+          stable = sameWindow(snapshot.window, second.window) && signature(snapshot.rects) === signature(second.rects);
+          snapshot = second;
+          if (stable || Date.now() >= deadline) break;
         }
-        snapshot = second;
+        if (!stable) throw new Error('布局在2秒稳定等待内仍变化，需要稍后重测');
       }
       const rects = snapshot.rects;
       const checked = checkPage(rects, taps, vw);
@@ -268,6 +275,7 @@ export async function scanUI(project, opts = {}) {
         viewport: { width: snapshot.window.windowWidth, height: snapshot.window.windowHeight },
         touchSmall: checked.touchSmall, rects, dataState: pageData[page]?.state || 'unknown' };
       entry.context = snapshot.context;
+      entry.layoutSamples = layoutSamples;
       report.elements += checked.uniq;
       touchAll.push(...checked.touchSmall);
       report.emptyClasses[page] = classes.filter(c => !rects[c].length).length;

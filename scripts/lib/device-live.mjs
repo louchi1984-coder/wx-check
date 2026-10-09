@@ -2,12 +2,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { discoverDeviceModules } from './diagnostic-modules.mjs';
+import { readLocalTargets } from './local-debug.mjs';
 
 const MODULES = (process.env.WECHATIDE_MODULES_DIR || '/Applications/wechatwebdevtools.app/Contents/Resources/app.asar/js/').replace(/[\\/]+$/, '') + '/';
-const STORE = MODULES + '046aafa51723e0b9f12bd58599007fec.js';
-const ACTIONS = MODULES + '2ecffceebb5231b0b30aa91a6000cc89.js';
-const SERVICES = MODULES + '9eee66f818065fa6881814a83bcfe0cf.js';
-const BRIDGE = MODULES + '7c6904c45555b535152eb890ace1ac1e.js';
 const RUNTIME = 'function(){var ps=getCurrentPages();return {window:wx.getWindowInfo(),device:wx.getDeviceInfo(),route:ps[ps.length-1].route};}';
 const outside = (project, dir) => {
   const relative = path.relative(project, path.resolve(dir));
@@ -56,9 +54,7 @@ export async function createLiveDeviceSession(project, opts = {}) {
   if (!client) {
     let targets;
     try {
-      const r = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(5000) });
-      if (!r.ok) throw Error('HTTP ' + r.status);
-      targets = await r.json();
+      targets = await readLocalTargets(port);
     } catch (e) { throw Error('本机调试通道不可用，需先获得用户许可，一次性开启工具调试端口；不自动重启、不退回逐机型重开。原因：' + e.message); }
     const matching = targets.filter(x => {
       try { return x.type === 'page' && /\/electron-project(?:-lite)?\.html$/.test(new URL(x.url).pathname) && path.resolve(new URL(x.url).searchParams.get('projectpath') || '') === project; }
@@ -69,12 +65,17 @@ export async function createLiveDeviceSession(project, opts = {}) {
     if (url.protocol !== 'ws:' || url.hostname !== '127.0.0.1' || Number(url.port) !== port) throw Error('拒绝连接非预期本机调试地址');
     client = await connect(url.href); targetId = matching[0].id;
   }
-  const prefix = `const store=require(${JSON.stringify(STORE)}).default;const state=store.getState();if(state.project.current.projectpath!==${JSON.stringify(project)})throw Error('目标项目已改变');`;
+  let modules;
+  try {
+    modules = opts.transport ? {store:'test-store',actions:'test-actions',services:'test-services',bridge:'test-bridge'} :
+      await client.evaluate(`(()=>{const fs=require('fs'),path=require('path'),root=${JSON.stringify(MODULES)};const entries=fs.readdirSync(root).filter(f=>f.endsWith('.js')).map(file=>({file,source:fs.readFileSync(path.join(root,file),'utf8')}));return (${discoverDeviceModules.toString()})(entries);})()`);
+  } catch(e) { client.close(); throw e; }
+  const prefix = `const store=require(${JSON.stringify(MODULES+modules.store)}).default;const state=store.getState();if(state.project.current.projectpath!==${JSON.stringify(project)})throw Error('目标项目已改变');`;
   const evaluate = (body, timeout) => client.evaluate(`(async()=>{${prefix}${body}})()`, timeout);
   const sessionId = 'autocheck_' + randomUUID(); let sequence = 0, changed = false, original, originalRoute;
   async function request(method, params = {}, timeout = 10000) {
     const message = { id: sessionId + '_' + ++sequence, method, params };
-    const raw = await evaluate(`const bridge=require(${JSON.stringify(SERVICES)}).default(require(${JSON.stringify(BRIDGE)}).IAutomatorBridgeService);return await bridge.request(${JSON.stringify(message)},${timeout});`, timeout + 500);
+    const raw = await evaluate(`const bridge=require(${JSON.stringify(MODULES+modules.services)}).default(require(${JSON.stringify(MODULES+modules.bridge)}).IAutomatorBridgeService);return await bridge.request(${JSON.stringify(message)},${timeout});`, timeout + 500);
     const response = JSON.parse(raw);
     if (response.error) throw Error(response.error.message || '自动化调用失败');
     return response.result;
@@ -126,7 +127,7 @@ export async function createLiveDeviceSession(project, opts = {}) {
     const e = Error('目标机型未在12秒内稳定：' + device.name); e.attempts = attempts; throw e;
   }
   async function select(index) {
-    await evaluate(`store.dispatch(require(${JSON.stringify(ACTIONS)}).default.selectDevice(${index}));return true;`);
+    await evaluate(`store.dispatch(require(${JSON.stringify(MODULES+modules.actions)}).default.selectDevice(${index}));return true;`);
   }
   try {
     const state = await evaluate('return {current:state.toolbar.device.current,list:state.toolbar.device.list};');

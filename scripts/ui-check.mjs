@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createLiveDeviceSession } from './lib/device-live.mjs';
 import { scanUI } from './lib/ui-scan.mjs';
-import { deviceTable, projectDeviceTable, createDeviceSession, parseDeviceSpec, sizeOf } from './lib/device-patch.mjs';
+import { deviceTable, projectDeviceTable, parseDeviceSpec, sizeOf } from './lib/device-catalog.mjs';
 
 const argv = process.argv.slice(2);
 const arg = (key, fallback = '') => { const i = argv.indexOf('--' + key); return i < 0 ? fallback : argv[i + 1]; };
@@ -38,15 +38,16 @@ function readable(reports) {
     (r.incomplete ? '，采集未完成，不能判为通过。' : '。')).join('\n') + '\n\n' +
     (issues.length ? '## 需要处理\n\n' + issues.map(i => '- ' + (i.rule === '触控区' ? '建议加大按钮点击区域' : '需要修复内容超出屏幕边缘') +
       '；位置：' + i.page + '；受影响机型：' + i.devices.join('、') + '。').join('\n') : '本次已采集的元素没有发现横向溢出或触控区偏小。') +
-    '\n\n## 未覆盖\n\n本脚本只采集截图，尚未读图审阅布局感受。执行者须逐张审阅六款精测截图并补充结论。重叠、文字截断、按钮遮挡、滚动与键盘尚未完成核验。这里只报告几何采集结果，不表示完整 UI 测试通过。使用当前页面数据，没有自动写入测试账目。未执行的机型也不计为通过。\n' +
+    '\n\n## 未覆盖\n\n本脚本只采集截图，尚未读图审阅布局感受。执行者须逐张审阅六款精测截图并补充结论。重叠、文字截断、按钮遮挡、滚动与键盘尚未完成核验。这里只报告几何采集结果，不表示完整 UI 测试通过。使用当前页面数据，未自动构造业务状态。未执行的机型也不计为通过。\n' +
     reports.flatMap(r => r.pages.filter(p => p.error).map(p => '\n- 未完成：' + p.page + '，原因：' + p.error)).join('') + '\n' +
     (pictures.length ? '\n## 页面截图\n\n' + pictures.map(p => '### ' + p.device + ' · ' + p.page + '\n\n![' + p.page + '](' + p.file + ')\n').join('\n') : '\n本次没有截图证据；最小采集正常页面不截图，不能据此评价整体外观。\n') +
     reports.flatMap(r => r.pages.filter(p => p.screenshotError).map(p => '\n- 截图失败：' + p.page + '，' + p.screenshotError)).join('');
 }
 export function buildPlan(table) {
   const configured = process.env.WECHATIDE_PRECISE_MODELS ? JSON.parse(process.env.WECHATIDE_PRECISE_MODELS) : null;
+  if (!configured) throw Error('批量精测前，请从本机目录选择小中大各两款，用 WECHATIDE_PRECISE_MODELS 指定六个完整名称');
   if (configured && (!Array.isArray(configured) || configured.length !== 6 || new Set(configured).size !== 6 || configured.some(x => typeof x !== 'string' || !x))) throw Error('WECHATIDE_PRECISE_MODELS 必须是六个不重复的本机机型全名JSON数组，顺序小小中中大大');
-  const preferred = configured ? configured.map((name, i) => [name, ['小','小','中','中','大','大'][i]]) : [['HUAWEI Mate X6外','小'],['HUAWEI nova 14 Ultra','小'],['HUAWEI Mate 80','中'],['HUAWEI Mate 70 Pro','中'],['iPhone 15 Pro Max','大'],['HUAWEI Pura X Max内','大']];
+  const preferred = configured.map((name, i) => [name, ['小','小','中','中','大','大'][i]]);
   const selected = new Map();
   for (const [name, group] of preferred) {
     const hit = table.find(x => x.name === name && (!x.type || x.type === 'default'));
@@ -63,11 +64,12 @@ function valuesAfter(flag) {
 }
 async function main() {
   if (argv.includes('--help')) { console.log(help); return; }
+  if (argv.includes('--device-switch')) throw Error('--device-switch 已删除；批量采集只使用运行中切换');
   const project = arg('project');
   if (argv.includes('--plan')) {
     const table = project ? projectDeviceTable(project) : deviceTable();
     if (!table) throw new Error('无法读取本机机型列表');
-    console.log(JSON.stringify(buildPlan(table), null, 2));
+    console.log(JSON.stringify(process.env.WECHATIDE_PRECISE_MODELS ? buildPlan(table) : table, null, 2));
     return;
   }
   const out = arg('out');
@@ -85,7 +87,7 @@ async function main() {
     const options = { only: arg('page'), screenshot: argv.includes('--screenshot'), log: console.log };
     if (argv.includes('--matrix') || argv.includes('--devices') || argv.includes('--device')) {
       const table = projectDeviceTable(project);
-      const plan = buildPlan(table);
+      const plan = argv.includes('--matrix') ? buildPlan(table) : table.map(x => ({name:x.name,size:sizeOf(x.desc),mode:'precise'}));
       const specs = argv.includes('--matrix') ? plan.map(x => x.name) : argv.includes('--devices') ? valuesAfter('--devices') : [arg('device')];
       if (!specs.length) throw new Error('未指定机型');
       const selected = specs.map(spec => {
@@ -96,11 +98,8 @@ async function main() {
       });
       if (selected.some(x => !['minimal','precise'].includes(x.mode))) throw new Error('mode 必须为 minimal 或 precise');
       batch = { planned: selected, failures: [], restoration: null };
-      const switchMode = arg('device-switch', 'live');
-      if (!['live','restart'].includes(switchMode)) throw new Error('device-switch 必须为 live 或 restart');
-      const session = switchMode === 'live'
-        ? await createLiveDeviceSession(project, { backupDir: path.join(out, 'backup'), port: arg('debug-port', process.env.WECHATIDE_DEBUG_PORT || 9223) })
-        : createDeviceSession(project, { backupDir: path.join(out, 'backup') });
+      const switchMode = 'live';
+      const session = await createLiveDeviceSession(project, { backupDir: path.join(out, 'backup'), port: arg('debug-port', process.env.WECHATIDE_DEBUG_PORT || 9223) });
       batch.switchMode = switchMode;
       try {
         for (const [index, item] of selected.entries()) {
@@ -138,7 +137,7 @@ async function main() {
     reports.length === 1 ? reports[0] : { reports, issues: mergeIssues(reports) }, null, 2));
   let text = reports.length ? readable(reports) : '# 界面检测未完成\n\n没有页面完成采集，不能给出通过结论。\n';
   if (batch) text += '\n## 批量执行状态\n\n' +
-    '- 切换方式：' + (batch.switchMode === 'live' ? '运行中切换，整批复用连接，不逐机型重开窗口。' : '旧兼容方式，逐机型重开窗口。') + '\n' +
+    '- 切换方式：' + '运行中切换，整批复用连接，不逐机型重开窗口。' + '\n' +
     '- 计划 ' + batch.planned.length + ' 个机型，已采集 ' + reports.length + ' 个。\n' +
     '- 原机型／页面恢复：' + (batch.restoration?.restored ? '已验证恢复 ' + batch.restoration.device + '。' : '未验证恢复：' + (batch.restoration?.error || '未切换')) + '\n' +
     batch.failures.map(x=>'- 未完成：'+x.device+'，'+x.error+'。\n').join('') +

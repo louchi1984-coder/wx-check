@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createLiveDeviceSession } from './lib/device-live.mjs';
+import http from 'node:http';
+import { readLocalTargets } from './lib/local-debug.mjs';
 function fixture(options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'live-device-test-'));
   const project = path.join(root, 'project'); fs.mkdirSync(project);
@@ -65,5 +67,18 @@ await test('已有恢复备份不可覆盖，工程内不可写备份',async()=>
 await test('不存在的机型不切换；当前机型不重复触发切换动作',async()=>{
   const f=fixture(),s=await createLiveDeviceSession(f.project,f);
   try{await assert.rejects(()=>s.switchTo('missing'),/没有机型/);await s.switchTo('A');assert.deepEqual(f.state.selected,[]);assert((await s.restore()).restored);}finally{s.close();}
+});
+await test('本机调试探测直接连接回环地址，不经fetch代理',async()=>{
+ const original=globalThis.fetch;globalThis.fetch=()=>{throw Error('代理不应被调用')};
+ const server=http.createServer((request,response)=>{assert.equal(request.url,'/json/list');response.end('[{"id":"local"}]')});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ try{assert.deepEqual(await readLocalTargets(server.address().port),[{id:'local'}]);}
+ finally{globalThis.fetch=original;await new Promise(resolve=>server.close(resolve))}
+});
+await test('非目标列表和无效端口不能假装调试已开启',async()=>{
+ const server=http.createServer((request,response)=>response.end('{"proxyError":true}'));
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ try{await assert.rejects(()=>readLocalTargets(server.address().port),/格式异常/);assert.throws(()=>readLocalTargets(0),/无效/);}
+ finally{await new Promise(resolve=>server.close(resolve))}
 });
 console.log(passed+' 项运行中切换回归通过');

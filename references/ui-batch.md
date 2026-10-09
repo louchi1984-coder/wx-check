@@ -2,23 +2,15 @@
 
 ## 覆盖计划
 
-按小、中、大各两个精测，其余机型只做最小必要检查。默认采用本机较新的六个预设，以可用屏幕宽度分组：
+小、中、大各两款精测，其余机型做最小必要检查。先运行`node scripts/ui-check.mjs --project <源码> --plan`读取当前工程机型目录，再由执行者按实际可用尺寸选择较新代表，包含折叠展开／宽而短的屏幕，不固定作者机器的型号。
 
-| 分组 | 精测代表 | 屏幕尺寸 |
-| --- | --- | --- |
-| 小 | HUAWEI Mate X6 外屏、nova 14 Ultra | 346×781、363×817 |
-| 中 | HUAWEI Mate 80、Mate 70 Pro | 366×809、376×809 |
-| 大 | iPhone 15 Pro Max、HUAWEI Pura X Max 内屏 | 430×932、940×665 |
-
-按完整机型名称匹配，不能因尺寸相同而选中旧机型。本机 Apple 最新可用预设为 iPhone 15 Pro Max，不虚构更新型号。旧机型保留最小检查。上述六款仅为历史验证示例。缺少时按本机可用预设调整计划：设置 WECHATIDE_PRECISE_MODELS 为六个完整机型名称的 JSON 数组，顺序小、小、中、中、大、大，并确保含宽屏／折叠展开代表。设置后先检查 --plan，再执行；不要求用户有这些实体手机。
-
-`node scripts/ui-check.mjs --plan` 只读本机机型表并输出计划。本机已验证：43 个机型，6 个精测、37 个最小检查；计划不是执行结果。
+设置WECHATIDE_PRECISE_MODELS为六个完整名称的JSON数组，顺序小、小、中、中、大、大。再运行--plan核对分组，--matrix执行该计划；未配置六款时--plan只列目录，--matrix明确报错。指定--devices可单独采集所选机型，不要求先选齐六款；不要求用户拥有对应实体手机。
 
 ## 执行顺序与范围
 
 1. 代码版本不变时，编译和工程静态检查只做一次，作为准备证据；用户已选代码测试时可复用到代码测试结果，不能因此宣称完成代码测试。后续 UI 命令不编译、不刷新、不重新读所有诊断面板。
 2. 切换目标机型后，先读取真实屏幕和内容尺寸。必须匹配预期屏幕尺寸，连续两次一致才开始；不用固定长等待，不套默认尺寸。
-3. 每页先导航，再一次读取全部 class 的元素位置，同时核对实际页面路径和尺寸。精测增加第二次采集以确认布局稳定；不因空列表里的 class 没元素就重复采集。
+3. 每页先导航，再一次读取全部 class 的元素位置，同时核对实际页面路径和尺寸。精测核对连续两次布局一致；入场动画仍在变化时，稳定等待预算最多2秒、每次间隔100毫秒、最多追加20次采集，稳定后立即继续（单次调用另有时限）；不因空列表里的 class 没元素就重复采集。
 4. 六个精测机型每页／必要状态保留一张截图，直接嵌入报告；其他机型的重叠、截断、遮挡等显示问题，有异常线索才截图复核；记录显示状态，未测项不算通过。同一问题跨机型合并，保留受影响机型及证据。
 5. 整批结束通过 finally 恢复原机型与原页面，并验证实际运行结果。中途失败也恢复；只改目标项目机型字段，其他设置保持当前值。恢复失败明确报告并保留工程外备份。
 
@@ -44,6 +36,12 @@
 需要 Node、wechatide，以及已登录、已打开目标项目的微信开发者工具；不需要 Codex 或其他 AI 平台。CLI 客户端由 `WECHATIDE_CLIENT` 指定（默认 miniprogram-autocheck；沿用已有授权客户端时设置其实际名称）。
 
 ```bash
+# 先读本机目录并选择六个实际机型名称；下列占位名称须替换
+node scripts/ui-check.mjs --project /path/to/source --plan
+export WECHATIDE_PRECISE_MODELS='["小屏机型1","小屏机型2","中屏机型1","中屏机型2","大屏机型1","大屏机型2"]'
+# Windows PowerShell中用 $env:WECHATIDE_PRECISE_MODELS='[...]' 设置同一JSON数组
+node scripts/ui-check.mjs --project /path/to/source --plan
+
 # 自动执行本机计划：六个精测，其余最小检查
 node scripts/ui-check.mjs --project /path/to/source --matrix --out /path/out/matrix
 
@@ -51,16 +49,18 @@ node scripts/ui-check.mjs --project /path/to/source --matrix --out /path/out/mat
 node scripts/ui-check.mjs --project /path/to/source --devices "HUAWEI Mate 80" "iPhone 15 Pro Max" --out /path/out/subset
 
 # 只对当前尺寸检测，屏幕尺寸必须真实匹配
-node scripts/ui-check.mjs --project /path/to/source --expected-size 320x568 --mode precise --out /path/out/iphone5
-node scripts/ui-check.mjs --project /path/to/source --expected-size 390x844 --mode minimal --out /path/out/iphone12
+node scripts/ui-check.mjs --project /path/to/source --expected-size 320x568 --mode precise --out /path/out/small
+node scripts/ui-check.mjs --project /path/to/source --expected-size 390x844 --mode minimal --out /path/out/medium
 
 # 汇总同一个工程不同机型的原始 report.json
-node scripts/ui-check.mjs --merge /path/out/iphone5/report.json /path/out/iphone12/report.json --out /path/out/summary
+node scripts/ui-check.mjs --merge /path/out/small/report.json /path/out/medium/report.json --out /path/out/summary
 ```
+
+命令从skill目录运行，或使用脚本绝对路径。六款配置必须传给后续--plan及--matrix的执行进程，不能假定不同工具调用共享export；通用运行时与路径配置见[工具说明](tool-details.md)。--page <实际页面路由>可限定采集页面；--devices的默认是精测采集，可用--mode minimal只补指定机型的最小检查。
 
 每次使用独立输出目录。报告和截图必须放到工程之外，避免检测文件触发热重载。精测每页保留一张图并内嵌到 Markdown 报告；最小检查的正常页不截图，显示异常／采集异常才截图。已有截图只在尺寸、状态与代码版本适用时复用，并注明原拍摄时间；不同采集时间不能冒充同轮证据。
 
-15 秒为单次调用上限；读取失败或通道超时停止本轮，不按每个 class 轮流等待。精测两次布局不一致也停止并标明未完成，待环境稳定后再运行，不在一次命令里无限重试。单次响应过大时先报采集不完整，按明确报错有针对性缩小采集，不能把超时当成数据过大盲目二分重试。
+15 秒为单次调用上限；读取失败或通道超时停止本轮，不按每个 class 轮流等待。精测在有限稳定等待后布局仍变化时停止并标明未完成，不无限重试；最小检查保持每页一次采集。单次响应过大时先报采集不完整，按明确报错有针对性缩小采集，不能把超时当成数据过大盲目二分重试。
 
 退出码：0 几何采集完成且无 P0；1 有确定横向溢出；2 参数错误／采集不完整。退出码 0 不表示全部 UI 项目通过。
 
@@ -68,24 +68,15 @@ node scripts/ui-check.mjs --merge /path/out/iphone5/report.json /path/out/iphone
 
 `ui-check.mjs` 自动完成：实际尺寸与页面核对、整页 class 矩形、横向溢出、触控区、精测布局稳定性、异常截图、耗时记录和跨机型问题合并。
 
-它**尚不自动判定**文字截断、元素重叠、关键按钮被遮挡，也不自动操作滚动或键盘。不能把容器和子元素正常重合误判为遮挡，也不能把需要滚动的按钮误判为永久不可见。以上按必要页面补充核验后才能写入完整精测结论；原有内容测量可用于针对性排查，不在每个机型无差别重跑。
+它**尚不自动判定**文字截断、元素重叠、关键按钮被遮挡，也不自动操作滚动或键盘。不能把容器和子元素正常重合误判为遮挡，也不能把需要滚动的按钮误判为永久不可见。以上按必要页面补充核验后才能写入完整精测结论；按疑点通过当前官方接口补查，不在每个机型无差别重跑。
 
 默认使用运行中切换：通过本机 CDP 连接定位目标项目窗口，调用开发者工具自己的 `toolbar.selectDevice`，复用它现有的 Automator 桥接完成导航、尺寸读取、采集及模拟器截图。整批共用一个连接，不点击 GUI，不逐机型启动 CLI，不关闭重开窗口，不修改应用安装包。必须用实际机型、屏幕尺寸及像素密度连续两次稳定匹配后检测；返回成功本身不算验证。
 
-已在 macOS 微信开发者工具 Stable 2.02.2608080 实测通过。这里使用工具内部模块，版本升级后入口可能变化；模块不匹配就停止，不能退回伪造运行数据或静默重开。需要 Node 22 或更新版本及工具的本机调试端口（默认 9223；`--debug-port` 或 `WECHATIDE_DEBUG_PORT` 可指定）。不依赖 Codex 或其他 AI 平台。
+这里使用工具内部模块，版本升级后入口可能变化；模块不匹配就停止，不能退回伪造运行数据或静默重开。需要 Node 22 或更新版本及工具的本机调试端口（默认 9223；`--debug-port` 或 `WECHATIDE_DEBUG_PORT` 可指定）。不依赖 Codex 或其他 AI 平台。
 
-首次开启本机调试端口可能需要**用户授权的一次重启**。先保存工作并获得许可，正常退出后启动：
+首次准备统一按[本机调试通道](debug-channel.md)执行只读检查、授权启动和参数核验；代码诊断与UI共用同一实际端口。已有可连接的进程直接复用，整批不重启。启动失败或检查被权限挡住时停止准备，不重复等价启动方式。
 
-```bash
-open -a /Applications/wechatwebdevtools.app --args --remote-debugging-address=127.0.0.1 --remote-debugging-port=9223
-```
-
-工具已经用该参数运行时直接复用；脚本自身不退出、不重启、不清登录态。通道不可用时给出原因并停止，不能每测一款就重开。后续切换由工具内部更新模拟器；跨操作系统时工具可能自行更新运行环境，不能要求省略真实就绪等待，也不能把短暂旧尺寸当成目标尺寸。
-
-`--matrix` 默认使用该方法。只有用户明确允许旧方法时，才使用 `--device-switch restart`：关闭目标窗口、精确映射一个配置、备份后修改，再打开并等待就绪。该兼容方式有逐机型重开的性能限制。
 整批先生成计划，逐个切换并保存独立报告；遇到通道或采集失败停止后续机型，已完成结果仍保存，未执行机型明确列出。原机型与页面在 finally 恢复并核验；恢复探测有上限，失败时给出备份位置。就绪后的实测信息直接传给 UI 采集，不重复两次就绪探测，也不在每个机型结束时重复恢复页面。
-
-`selfcheck.mjs --device` 已恢复为转交独立 UI 入口的兼容命令。不要直接调用旧的跨项目写入方式；`patchDevice` 必须显式指定项目且窗口已关闭，默认完整批量流程使用 `createLiveDeviceSession`；`createDeviceSession` 仅用于显式选择的旧兼容方式。本地备份供恢复使用，不把其内容加入面向普通人的检测报告。
 
 ## 面向普通人的报告
 
@@ -98,3 +89,9 @@ open -a /Applications/wechatwebdevtools.app --args --remote-debugging-address=12
 ## 统一交付要求
 
 面向用户的报告必须遵守 [检测报告统一规范](reporting.md)，使用固定模板、状态和必填证据；本文件的专门要求填写在模板对应栏目，不另创报告格式。
+
+## 首次通道检查与失败分支
+
+先验证当前机型的一页采集、截图和恢复，读图确认通道正常，再扩大到既定多机型计划；这一页不是完整UI结论。全页/多机型可能超过执行工具前台时限，使用其后台能力保存日志和任务进度；不固定要求某个agent。
+
+端口、权限和启动失败统一按[本机调试通道](debug-channel.md)处理，不另换方式启动。短时间内无法建立时明确阻塞；可用的官方CLI当前机型检查继续，多机型标未覆盖，不以单机型代替。机型模块按能力定位，不固定打包哈希；能力缺失或候选不唯一时停止并说明。

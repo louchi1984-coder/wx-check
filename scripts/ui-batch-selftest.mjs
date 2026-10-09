@@ -22,7 +22,7 @@ function mock(options={}) {
     if (!fn.includes('createSelectorQuery')) data={window:options.window || win,device:{model:'mock'},route:options.startRoute};
     else {
       snapshots++;
-      const left=options.unstable?snapshots:0;
+      const left=options.unstable?snapshots:options.animation?Math.min(snapshots,3):0;
       data={route:options.wrongRoute?'other':route,nativeId:1,window:options.pageHeight && route==='two'?{...win,windowHeight:480}:win,rects:options.missing?[[]]:[
         [{left,top:0,right:320,bottom:100,width:320,height:100}],
         [{left:10,top:10,right:options.overflow?350:100,bottom:60,width:90,height:50}]]};
@@ -40,13 +40,17 @@ await test('最小检查每页一次采集，不编译、刷新或正常截图',
  assert(m.calls.every(c=>['automation_evaluate','automation_navigate','automation_runtime_info'].includes(c.tool)));
 });
 await test('新机型精测按完整名称匹配，同尺寸旧型号降为最小检查',async()=>{
-  const names=['HUAWEI Mate X6外','HUAWEI nova 14 Ultra','HUAWEI Mate 80','HUAWEI Mate 70 Pro','iPhone 15 Pro Max','HUAWEI Pura X Max内'];
+  const names=['Small A','Small B','Medium A','Medium B','Large A','Wide B'];
+  const previous=process.env.WECHATIDE_PRECISE_MODELS;
+  process.env.WECHATIDE_PRECISE_MODELS=JSON.stringify(names);
+  try {
   const table=['iPhone 14 Pro Max',...names].map((name,index)=>({name,index,type:'default',desc:'430 x 932 | Dpr:3'}));
   const plan=buildPlan(table);
   assert.equal(plan[0].mode,'minimal');
   assert.equal(plan.filter(x=>x.mode==='precise').length,6);
   for(const group of ['小','中','大'])assert.equal(plan.filter(x=>x.group===group).length,2);
   assert.throws(()=>buildPlan(table.slice(0,-1)),/缺少精测机型/);
+  } finally { if(previous===undefined)delete process.env.WECHATIDE_PRECISE_MODELS;else process.env.WECHATIDE_PRECISE_MODELS=previous; }
 });
 await test('精测核对稳定性并且每页只保留一张截图',async()=>{const m=mock();const r=await scanUI(root,{...opts,...m,mode:'precise'});assert.equal(r.pages.length,2);assert.equal(m.calls.length,16);assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,2);assert(r.pages.every(p=>p.screenshot));});
 await test('不同页面内容高度变化不误判为机型切换',async()=>{const m=mock({pageHeight:true});const r=await scanUI(root,{...opts,...m,mode:'precise'});assert(!r.incomplete);assert.equal(r.pages[1].viewport.height,480);});
@@ -60,7 +64,8 @@ await test('错误页面不记为通过，并停止后续页面',async()=>{const
 await test('同路径旧页面编号停止采集，不能生成该页截图证据',async()=>{const m=mock({stalePage:true});const r=await scanUI(root,{...opts,...m,mode:'precise'});assert(r.incomplete);assert.equal(r.elements,0);assert.match(r.pages[0].error,/已过期/);assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,0);});
 await test('页面编号查询失败停止采集，不只比较路径',async()=>{const m=mock();const call=(tool,...args)=>tool==='automation_runtime_info'?{ok:false,message:'unavailable'}:m.call(tool,...args);const r=await scanUI(root,{...opts,call});assert(r.incomplete);assert.equal(r.elements,0);assert.deepEqual(r.unvisitedPages,['two']);});
 await test('丢失采集结果不记为零问题通过',async()=>{const m=mock({missing:true});const r=await scanUI(root,{...opts,...m});assert(r.incomplete);assert.equal(r.elements,0);});
-await test('精测布局不稳定时不给通过结论',async()=>{const m=mock({unstable:true});const r=await scanUI(root,{...opts,...m,mode:'precise'});assert(r.incomplete);assert.match(r.pages[0].error,/不稳定/);});
+await test('精测等待短暂入场动画结束后采集，仅保留一张截图',async()=>{const m=mock({animation:true});const waits=[];const r=await scanUI(root,{...opts,...m,only:'one',mode:'precise',sleep:async ms=>waits.push(ms)});assert(!r.incomplete);assert.equal(r.pages[0].layoutSamples,4);assert.deepEqual(waits,[100,100,100]);assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,1);});
+await test('精测布局持续变化时有界停止，不给通过结论',async()=>{const m=mock({unstable:true});const waits=[];const r=await scanUI(root,{...opts,...m,mode:'precise',sleep:async ms=>waits.push(ms)});assert(r.incomplete);assert.match(r.pages[0].error,/仍变化/);assert.equal(waits.length,20);assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,0);});
 await test('异常才截图，且截图在工程外',async()=>{const m=mock({overflow:true});const r=await scanUI(root,{...opts,...m});assert(r.totals.P0>0);assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,2);assert(r.pages.every(p=>!p.screenshot.startsWith(root+path.sep)));});
 await test('禁止将截图写入工程中',async()=>{const m=mock();await assert.rejects(()=>scanUI(root,{...opts,...m,screenshotDir:path.join(root,'shots')}),/工程之外/);});
 await test('同一问题跨机型合并且保留机型清单',async()=>{
