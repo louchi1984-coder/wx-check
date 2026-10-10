@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { discoverDeviceModules, discoverDiagnosticModules } from './lib/diagnostic-modules.mjs';
-import { readEditorPanels } from './lib/editor-diagnostics.mjs';
+import { readEditorPanels, readDiagnosticSources } from './lib/editor-diagnostics.mjs';
 
 let pass = 0;
 const t = (name, fn) => {
@@ -82,4 +82,7 @@ try {
   fs.rmSync(root, { recursive: true, force: true });
 }
 
+const independent=await readDiagnosticSources({build:()=>({available:true,logs:['saved']}),quality:async()=>{throw Error('timeout')},problems:()=>({available:true,markers:[]}),output:()=>({available:true,channels:[]})});
+t('代码质量失败仍保存构建、问题、输出证据',()=>{assert.equal(independent.quality.available,false);assert.deepEqual(independent.build.logs,['saved']);assert.equal(independent.problems.available,true);assert.equal(independent.output.available,true)});
+t('构建与质量模块缺失不阻止其他模块发现',()=>{const entries=[{file:'s',source:'IStoreService getState: subscribe: unsubscribe: exports.default=function'},{file:'f',source:'exports.getRootFactory= invokeFunction exports.default='},{file:'e',source:'exports.IEditorWorkbenchService= createDecorator'}];const found=discoverDiagnosticModules(entries);assert.equal(found.hub,null);assert.equal(found.quality,null);assert.equal(found.editor,'e')});
 console.log(pass + ' 项诊断面板回归通过' + (process.exitCode ? '，存在失败项' : ''));

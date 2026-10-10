@@ -33,7 +33,7 @@ const tabPages = (app) => ((app.tabBar && app.tabBar.list) || []).map((i) => Str
 function classesIn(s) {
   const out = [];
   for (const m of String(s).matchAll(/class="([^"]*)"/g)) {
-    for (const c of m[1].split(/\s+/)) if (/^[A-Za-z0-9_-]+$/.test(c)) out.push(c);
+    for (const c of m[1].replace(/\S*\{\{[\s\S]*?\}\}\S*/g, ' ').split(/\s+/)) if (/^[A-Za-z0-9_-]+$/.test(c)) out.push(c);
   }
   return out;
 }
@@ -52,13 +52,27 @@ function tapClasses(wxml) {
   return [...s];
 }
 
-/** 整页一次采集；只读 boundingClientRect，避免 fields 的序列化问题。 */
-async function pageSnapshot(run, classes) {
+function scrollSelectors(wxml) {
+  const selectors = [];
+  for (const m of String(wxml).matchAll(/<scroll-view\b((?:"[^"]*"|'[^']*'|[^'">])*)>/g)) {
+    const attrs = m[1];
+    const id = attrs.match(/\bid=["']([A-Za-z0-9_-]+)["']/)?.[1];
+    const classes = classesIn(attrs);
+    if (id || classes.length) selectors.push(id ? '#' + id : '.' + classes.join('.'));
+  }
+  return [...new Set(selectors)];
+}
+
+/** 整页一次采集；滚动容器仅附带可序列化的几何与当前scrollX属性。 */
+async function pageSnapshot(run, classes, scrolls = []) {
   const fn = 'function(){return new Promise(function(resolve){' +
     'var ps=getCurrentPages();var p=ps[ps.length-1];var q=wx.createSelectorQuery().in(p);' +
-    'var cs=' + JSON.stringify(classes) + ';' +
+    'var cs=' + JSON.stringify(classes) + ',ss=' + JSON.stringify(scrolls) + ';' +
     'cs.forEach(function(c){q.selectAll("."+c).boundingClientRect();});' +
-    'q.exec(function(r){resolve({route:p.route,nativeId:p.__wxWebviewId__||p.data.__webviewId__,window:wx.getWindowInfo(),rects:r});});});}';
+    'ss.forEach(function(s){q.selectAll(s).fields({rect:true,size:true,properties:["scrollX"]});' +
+    'q.selectAll(cs.map(function(c){return s+" ."+c;}).join(",")).boundingClientRect();});' +
+    'q.exec(function(r){resolve({route:p.route,nativeId:p.__wxWebviewId__||p.data.__webviewId__,window:wx.getWindowInfo(),' +
+    'rects:r.slice(0,cs.length),scrollClips:ss.map(function(s,i){return {selector:s,containers:r[cs.length+i*2],descendants:r[cs.length+i*2+1]};})});});});}';
   return (await run('automation_evaluate', ['--fn-source', fn])).result?.result?.result;
 }
 
@@ -89,7 +103,7 @@ export function groupByElement(rects) {
   return [...map.values()];
 }
 
-export function checkPage(rects, taps, vw) {
+export function checkPage(rects, taps, vw, scrollClips = []) {
   const issues = [];
   const touchSmall = [];
   const add = (level, rule, cls, msg) => issues.push({ level, rule, class: cls, msg });
@@ -108,8 +122,11 @@ export function checkPage(rects, taps, vw) {
     // 报真实 class 组合（按 wxml 里的书写顺序），而不是碰巧先匹配上的那一个
     const label = classes.join(' ');
 
-    if (r > vw + 1) add('P0', '横向溢出', label, '右边界 ' + R(r) + ' 超出屏幕宽 ' + vw);
-    if (l < -1) add('P0', '横向溢出', label, '左边界 ' + R(l) + ' 在屏幕外');
+    const clipped = scrollClips.some(clip => clip.containers.length > 0 &&
+      clip.containers.every(c => c.scrollX === true && c.width > 0 && c.height > 0 && c.left >= -1 && c.right <= vw + 1) &&
+      clip.descendants.some(d => ['left', 'top', 'right', 'bottom'].every(k => d[k] === el[k])));
+    if (!clipped && r > vw + 1) add('P0', '横向溢出', label, '右边界 ' + R(r) + ' 超出屏幕宽 ' + vw);
+    if (!clipped && l < -1) add('P0', '横向溢出', label, '左边界 ' + R(l) + ' 在屏幕外');
 
     const tapCls = classes.filter((c) => taps.includes(c));
     if (tapCls.length && (w < TOUCH_MIN || h < TOUCH_MIN)) touchSmall.push({ classes: tapCls, w, h });
@@ -187,11 +204,17 @@ export async function scanUI(project, opts = {}) {
       let { r: res, err } = await attempt(tool, args);
       if (err && dead(err) && !recovered && tool.startsWith('automation_')) {
         recovered = true;
-        log('  automator 忙（重编译中），等待 20 秒后重试一次');
-        await settle(20000);
-        ({ r: res, err } = await attempt(tool, args));
+        log('  automator 暂不可用，先查询当前页面，再决定是否重试');
+        const probe = await attempt('automation_runtime_info', ['--action', 'currentPage']);
+        if (!probe.err && probe.r?.result?.currentPage?.path) {
+          ({ r: res, err } = await attempt(tool, args));
+        } else {
+          const failure = new Error(err + '；页面探测：' + (probe.err || '当前页面未就绪'));
+          failure.connectionUnavailable = /项目调试连接(?:已关闭|失败|超时)/.test(probe.err || '');
+          throw failure;
+        }
       }
-      if (err) throw new Error(err);
+      if (err) { const failure = new Error(err); failure.connectionUnavailable = /项目调试连接(?:已关闭|失败|超时)/.test(err); throw failure; }
       r = res;
       return r;
     } finally {
@@ -236,11 +259,12 @@ export async function scanUI(project, opts = {}) {
     const wxml = readWxml(project, page);
     const classes = [...new Set(classesIn(wxml))];
     const taps = tapClasses(wxml);
+    const scrolls = scrollSelectors(wxml);
     let entry;
     try {
       await run('automation_navigate', ['--action', tabs.includes(page) ? 'switchTab' : 'reLaunch', '--url', '/' + page]);
       async function collect() {
-        const data = await pageSnapshot(run, classes);
+        const data = await pageSnapshot(run, classes, scrolls);
         const context = assertPageSnapshot(data, await run('automation_runtime_info', ['--action', 'currentPage']));
         if (data?.route !== page) throw new Error('当前页面与目标不一致');
         if (!['screenWidth', 'screenHeight', 'pixelRatio', 'windowWidth'].every(k => data.window?.[k] === info.window[k])) {
@@ -249,33 +273,37 @@ export async function scanUI(project, opts = {}) {
         if (!Array.isArray(data.rects) || data.rects.length !== classes.length || data.rects.some(x => !Array.isArray(x))) {
           throw new Error('页面元素采集不完整');
         }
-        return { rects: Object.fromEntries(classes.map((c, i) => [c, data.rects[i]])), window: data.window, context };
+        const scrollClips = data.scrollClips || [];
+        if (!Array.isArray(scrollClips) || scrollClips.length !== scrolls.length || scrollClips.some(c => !Array.isArray(c.containers) || !Array.isArray(c.descendants))) {
+          throw new Error('滚动容器采集不完整');
+        }
+        return { rects: Object.fromEntries(classes.map((c, i) => [c, data.rects[i]])), scrollClips, window: data.window, context };
       }
       let snapshot = await collect();
       let layoutSamples = 1;
       if (mode === 'precise') {
         const signature = r => JSON.stringify(groupByElement(r).map(({el,classes}) =>
           [classes, el.left, el.top, el.right, el.bottom]));
-        const deadline = Date.now() + 2000;
-        let stable = false;
-        for (let attempt = 0; attempt < 20; attempt++) {
-          await settle(100);
-          const second = await collect();
-          layoutSamples++;
-          stable = sameWindow(snapshot.window, second.window) && signature(snapshot.rects) === signature(second.rects);
-          snapshot = second;
-          if (stable || Date.now() >= deadline) break;
-        }
-        if (!stable) throw new Error('布局在2秒稳定等待内仍变化，需要稍后重测');
+        await settle(100);
+        const second = await collect();
+        layoutSamples++;
+        snapshot.layoutStable = sameWindow(snapshot.window, second.window) && signature(snapshot.rects) === signature(second.rects);
+        snapshot = { ...second, layoutStable: snapshot.layoutStable };
       }
       const rects = snapshot.rects;
-      const checked = checkPage(rects, taps, vw);
-      if (!checked.uniq) throw new Error('没有采集到可见元素，不能判为通过');
+      const checked = checkPage(rects, taps, vw, snapshot.scrollClips);
+      const geometryUnavailable = !checked.uniq;
+      if (geometryUnavailable) report.incomplete = true;
       entry = { page, classes: classes.length, elements: checked.uniq, issues: checked.issues,
         viewport: { width: snapshot.window.windowWidth, height: snapshot.window.windowHeight },
-        touchSmall: checked.touchSmall, rects, dataState: pageData[page]?.state || 'unknown' };
+        touchSmall: checked.touchSmall, rects, scrollClips: snapshot.scrollClips, dataState: pageData[page]?.state || 'unknown' };
       entry.context = snapshot.context;
       entry.layoutSamples = layoutSamples;
+      if (mode === 'precise') entry.layoutStable = snapshot.layoutStable;
+      if (geometryUnavailable || snapshot.layoutStable === false) {
+        entry.needsVisualReview = true;
+        entry.reviewReason = geometryUnavailable ? '没有采集到按class定位的可见元素，需读图及补查实际结构' : '两次采样布局有变化，需读图判断动画或真实布局问题';
+      }
       report.elements += checked.uniq;
       touchAll.push(...checked.touchSmall);
       report.emptyClasses[page] = classes.filter(c => !rects[c].length).length;
@@ -286,8 +314,8 @@ export async function scanUI(project, opts = {}) {
     } catch (e) {
       entry = { page, error: e.message, issues: [] };
       report.incomplete = true;
-      report.aborted = true;
-      log('  停止采集：' + e.message);
+      if (e.connectionUnavailable) report.aborted = true;
+      log('  本页未完成：' + e.message);
     }
     report.pages.push(entry);
     // 精测每页保留一次界面证据；其余机型异常才截图。

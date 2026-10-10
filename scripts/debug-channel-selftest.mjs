@@ -1,3 +1,4 @@
+import { readProcessInfo } from './lib/debug-channel.mjs';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
@@ -21,7 +22,7 @@ await test('端口优先显式参数，再环境变量，再默认值',()=>{
 const noProcess=()=>({checked:true,processes:[]});
 await test('GUI启动仅移除子进程Node模式，保留安全钩子与父环境',()=>{
   const env={ELECTRON_RUN_AS_NODE:'1',NODE_OPTIONS:'--require=/security/hook.cjs',NODE_REPL_EXTERNAL_MODULE:'/security/repl.cjs',PATH:'/bin',WECHATIDE_DEBUG_PORT:'9333'};
-  const r=debugLaunchCommand('/real/Electron',undefined,env);
+  const r=debugLaunchCommand('/real/Electron',undefined,env,{platform:'win32'});
   assert.deepEqual(r.args,['--remote-debugging-address=127.0.0.1','--remote-debugging-port=9333']);
   assert.equal(r.env.ELECTRON_RUN_AS_NODE,undefined);assert.equal(env.ELECTRON_RUN_AS_NODE,'1');
   for(const key of ['NODE_OPTIONS','NODE_REPL_EXTERNAL_MODULE','PATH'])assert.equal(r.env[key],env[key]);
@@ -112,17 +113,17 @@ await test('正常准备只退出一次、启动一次，并核对真实通道',
 await test('退出状态不明确时禁止启动和强杀',async()=>{
   let checks=0,starts=0,time=0;
   const r=await prepareDebugChannel({authorized:true,check:async()=>{checks++;return ordinary},quit:()=>{},launch:()=>starts++,now:()=>time,pause:async ms=>{time+=ms}});
-  assert.equal(r.status,'exit-unconfirmed');assert.equal(starts,0);assert.equal(time,15000);
+  assert.equal(r.status,'exit-pending');assert.equal(starts,0);assert.equal(time,30000);
 });
 await test('启动沙箱错误即停止，假就绪不覆盖原始失败，不重试',async()=>{
   let checks=0,starts=0;
-  const r=await prepareDebugChannel({authorized:true,check:async()=>++checks===1?missing:{...missing,status:'ready'},launch:()=>starts++,readLog:()=> 'sandbox initialization failed: Operation not permitted'});
+  const r=await prepareDebugChannel({authorized:true,check:async()=>{checks++;return missing},launch:()=>starts++,readLog:()=> 'sandbox initialization failed: Operation not permitted'});
   assert.equal(r.status,'startup-failed');assert.equal(starts,1);assert.equal(checks,2);
 });
 await test('持续未监听最多等待30秒，只启动一次',async()=>{
   let time=0,starts=0;
   const r=await prepareDebugChannel({authorized:true,check:async()=>missing,launch:()=>starts++,now:()=>time,pause:async ms=>{time+=ms}});
-  assert.equal(r.status,'startup-failed');assert.equal(time,30000);assert.equal(starts,1);
+  assert.equal(r.status,'starting');assert.equal(time,30000);assert.equal(starts,1);
 });
 await test('真实诊断入口不调用CLI，也不打开或刷新工程',async()=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'wx-check-no-cli-'));
@@ -211,7 +212,7 @@ await test('保存连接信息包含工程、端口与CLI身份，已有文件�
       const before=fs.readFileSync(out,'utf8'),saved=JSON.parse(before);
       assert.equal(saved.project,path.resolve('/fixture'));assert.equal(saved.port,port);assert.equal(saved.protocol.available,true);
       assert.deepEqual(saved.cli,{bin:'fixture-cli',client:'fixture-client'});assert.doesNotMatch(before,/private-token/);
-      assert.notEqual((await run()).code,0);assert.equal(fs.readFileSync(out,'utf8'),before);
+      assert.equal((await run()).code,0);assert.equal(fs.readFileSync(out,'utf8'),before);assert.equal(fs.readdirSync(dir).length,2);
     },()=>({result:{result:{value:'file:///app/electron-project.html?projectpath=%2Ffixture'}}}));
   }finally{fs.rmSync(dir,{recursive:true,force:true})}
 });
@@ -234,4 +235,54 @@ await test('CLI即使输出成功JSON，非零退出仍失败并保留完整输�
   finally{fs.rmSync(dir,{recursive:true,force:true})}
 });
 
+
+await test('ps被拒但pgrep获准时确认主进程，而不是停下',()=>{
+ const calls=[];const r=readProcessInfo((command)=>{calls.push(command);return command==='/bin/ps'?{error:Error('EPERM')}:{status:0,stdout:'12 /Applications/wechatwebdevtools.app/Contents/MacOS/wechatwebdevtools --remote-debugging-port=9223'}},'darwin');
+ assert.equal(r.checked,true);assert.equal(r.method,'pgrep');assert.equal(r.processes.length,1);assert.equal(r.processes[0].debugPort,9223);assert.deepEqual(calls,['/bin/ps','/usr/bin/pgrep']);
+});
+await test('两种进程读取均被拒绝时保留错误，不伪装无进程',()=>{const r=readProcessInfo(()=>({error:Error('EPERM')}),'darwin');assert.equal(r.checked,false);assert.match(r.error,/pgrep/);});
+await test('已有同名启动日志不阻断复用通道，保存旧日志',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'wx-check-log-')),log=path.join(dir,'old.log');fs.writeFileSync(log,'keep');
+ try{await protocolFixture(async({port})=>{
+  const result=await new Promise((resolve,reject)=>{
+   const child=spawn(process.execPath,[fileURLToPath(new URL('./prepare-debug-channel.mjs',import.meta.url)),'--project','/fixture','--port',String(port),'--restart-authorized','--executable',process.execPath,'--log',log]);
+   let text='',err='';child.stdout.on('data',b=>text+=b);child.stderr.on('data',b=>err+=b);child.on('error',reject);child.on('close',code=>resolve({code,text,err}));
+  });
+  assert.equal(result.code,0,result.err);const data=JSON.parse(result.text);assert.equal(data.status,'ready');assert.notEqual(data.launchLog.path,log);assert.equal(fs.readFileSync(log,'utf8'),'keep');assert.equal(data.started,undefined);
+ },()=>({result:{result:{value:'file:///app/electron-project.html?projectpath=%2Ffixture'}}}));}finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
+await test('启动日志有警告但实际通道就绪时保留警告，不误判启动失败',async()=>{
+ let checks=0;const r=await prepareDebugChannel({project:'/fixture',authorized:true,check:async()=>++checks===1?missing:{...missing,status:'ready',projectMatches:1,protocol:{available:true}},launch:()=>({pid:1}),readLog:()=> 'sandbox initialization failed: Operation not permitted'});
+ assert.equal(r.status,'ready');assert.match(r.launchWarnings[0],/sandbox initialization failed/);
+});
+await test('Mac应用通过正常系统启动器传参并分别保留标准输出和错误',()=>{
+ const env={NODE_OPTIONS:'--require=/security/hook.cjs',ELECTRON_RUN_AS_NODE:'1'};
+ const r=debugLaunchCommand('/Applications/Example Tool.app/Contents/MacOS/Electron',9223,env,{platform:'darwin',log:'/evidence/start.log',method:'application'});
+ assert.equal(r.executable,'/usr/bin/open');assert.deepEqual(r.args,['-n','-a','/Applications/Example Tool.app','--stdout','/evidence/start.log.stdout.log','--stderr','/evidence/start.log.stderr.log','--args','--remote-debugging-address=127.0.0.1','--remote-debugging-port=9223']);assert.equal(r.env.NODE_OPTIONS,env.NODE_OPTIONS);assert.equal(r.env.ELECTRON_RUN_AS_NODE,undefined);
+});
+await test('Mac省略启动方式时使用系统应用启动，Windows保留直接启动',()=>{
+ const exe='/Applications/Example Tool.app/Contents/MacOS/Electron';
+ assert.equal(debugLaunchCommand(exe,9223,{}, {platform:'darwin'}).executable,'/usr/bin/open');
+ assert.equal(debugLaunchCommand('C:\\Example\\wechatdevtools.exe',9223,{}, {platform:'win32'}).method,'direct');
+});
+await test('旧Mac直接启动参数在退出当前工具之前被拦截',async()=>{
+ let quits=0,starts=0;
+ const r=await prepareDebugChannel({authorized:true,check:async()=>ordinary,quit:()=>quits++,launch:()=>starts++,validateLaunch:()=>debugLaunchCommand('/Applications/Example.app/Contents/MacOS/Electron',9223,{}, {platform:'darwin',method:'direct'})});
+ assert.equal(r.status,'configuration-required');assert.equal(quits,0);assert.equal(starts,0);assert.match(r.error.message,/系统应用启动/);
+});
+await test('HTTP短暂可连但沙箱初始化失败不能冒充工程就绪',async()=>{
+ let checks=0,starts=0;
+ const r=await prepareDebugChannel({project:'/fixture',authorized:true,check:async()=>++checks===1?missing:{...missing,status:'ready',projectMatches:0,protocol:{available:false}},launch:()=>starts++,readLog:()=> 'sandbox initialization failed: Operation not permitted'});
+ assert.equal(r.status,'startup-failed');assert.equal(starts,1);assert.match(r.launchWarnings[0],/sandbox initialization failed/);
+});
+await test('图形进程致命错误优先于暂时通过的协议，不重复启动',async()=>{
+ let checks=0,starts=0;
+ const r=await prepareDebugChannel({project:'/fixture',authorized:true,check:async()=>++checks===1?missing:{...missing,status:'ready',projectMatches:1,protocol:{available:true}},launch:()=>starts++,readLog:()=> "FATAL: GPU process isn't usable. Goodbye."});
+ assert.equal(r.status,'startup-failed');assert.equal(starts,1);assert.match(r.launchWarnings[0],/GPU process isn't usable/);
+});
+await test('系统启动丢失调试参数后立即转终端，不等待或拉起第二实例',async()=>{
+ let checks=0,starts=0;
+ const r=await prepareDebugChannel({authorized:true,check:async()=>++checks===1?missing:ordinary,launch:()=>starts++,pause:()=>{throw Error('不应继续等待')}});
+ assert.equal(r.status,'startup-failed');assert.equal(starts,1);assert.match(r.reason,/未带调试参数/);
+});
 console.log(passed+' 项调试通道回归通过');

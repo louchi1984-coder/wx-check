@@ -1,6 +1,7 @@
 import { inspectDebugChannel, resolveDebugPort } from './lib/debug-channel.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 const args=process.argv.slice(2);
 let port,project,out;
 for(let i=0;i<args.length;i++){
@@ -14,6 +15,11 @@ if(out){
 }
 const result=await inspectDebugChannel({port:resolveDebugPort(port),project});
 result.cli={bin:process.env.WECHATIDE_BIN||'wechatide',client:process.env.WECHATIDE_CLIENT||'miniprogram-autocheck'};
-if(out)fs.writeFileSync(out,JSON.stringify(result,null,2)+'\n',{flag:'wx'});
+if(out){
+  if(fs.existsSync(out))out=path.join(path.dirname(out),path.basename(out)+'.'+randomUUID()+'.json');
+  fs.mkdirSync(path.dirname(out),{recursive:true});
+  result.connectionFile=out;
+  fs.writeFileSync(out,JSON.stringify(result,null,2)+'\n',{flag:'wx'});
+}
 console.log(JSON.stringify(result,null,2));
 process.exitCode=result.status==='ready'&&(!project||result.projectMatches===1)?0:2;

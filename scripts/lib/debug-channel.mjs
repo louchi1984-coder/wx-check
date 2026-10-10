@@ -9,10 +9,19 @@ export function resolveDebugPort(explicit, env=process.env) {
 }
 
 /** GUI子进程不能继承Electron的Node运行模式；其他环境和安全钩子原样保留。 */
-export function debugLaunchCommand(executable, port, env=process.env) {
+export function debugLaunchCommand(executable, port, env=process.env, {platform=process.platform,log,method=platform==='darwin'?'application':'direct'}={}) {
+  if(platform==='darwin'&&method==='direct')throw Error('Mac须通过系统应用启动，避免开发者工具继承调用进程的沙箱与注入环境；使用application，失败后转用户系统终端。');
   const childEnv={...env};
   delete childEnv.ELECTRON_RUN_AS_NODE;
-  return {executable,args:['--remote-debugging-address=127.0.0.1','--remote-debugging-port='+resolveDebugPort(port,env)],env:childEnv};
+  const flags=['--remote-debugging-address=127.0.0.1','--remote-debugging-port='+resolveDebugPort(port,env)];
+  const bundle=platform==='darwin'&&executable.match(/^(.*\.app)\/Contents\/MacOS\/[^/]+$/)?.[1];
+  if(method==='application'&&!bundle)throw Error('application启动方式需要Mac应用的实际主程序路径');
+  if(bundle&&method==='application'){
+    const args=['-n','-a',bundle];
+    if(log)args.push('--stdout',log+'.stdout.log','--stderr',log+'.stderr.log');
+    return {executable:'/usr/bin/open',args:[...args,'--args',...flags],env:childEnv,method:'launch-services'};
+  }
+  return {executable,args:flags,env:childEnv,method:'direct'};
 }
 
 export function parseMacProcesses(stdout) {
@@ -27,10 +36,10 @@ export function parseMacProcesses(stdout) {
   return processes;
 }
 
-export function readProcessInfo() {
-  if(process.platform==='win32'){
+export function readProcessInfo(run=spawnSync, platform=process.platform) {
+  if(platform==='win32'){
     const script="[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(wechat(web)?devtools|微信开发者工具)\\.exe$' -and $_.CommandLine -notmatch '--type=' } | Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress";
-    const r=spawnSync('powershell.exe',['-NoProfile','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{encoding:'utf8',timeout:3000});
+    const r=run('powershell.exe',['-NoProfile','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{encoding:'utf8',timeout:3000});
     if(r.error||r.status!==0)return {checked:false,error:r.error?.message||r.stderr.trim()||'进程读取失败'};
     try{
       const data=r.stdout.trim()?JSON.parse(r.stdout):[];
@@ -39,10 +48,13 @@ export function readProcessInfo() {
       return {checked:true,processes:rows.map(p=>({pid:Number(p.ProcessId),executable:p.ExecutablePath,debugPort:Number(p.CommandLine.match(/--remote-debugging-port(?:=|\s+)(\d+)/)?.[1])||null}))};
     }catch(e){return {checked:false,error:'进程读取格式异常：'+e.message}}
   }
-  if(process.platform!=='darwin')return {checked:false,error:'此平台需由执行者核对开发者工具主进程参数'};
-  const r=spawnSync('/bin/ps',['-axo','pid=,args='],{encoding:'utf8',timeout:3000});
-  if(r.error||r.status!==0)return {checked:false,error:r.error?.message||r.stderr.trim()||'进程读取失败'};
-  return {checked:true,processes:parseMacProcesses(r.stdout)};
+  if(platform!=='darwin')return {checked:false,error:'此平台需由执行者核对开发者工具主进程参数'};
+  const r=run('/bin/ps',['-axo','pid=,args='],{encoding:'utf8',timeout:3000});
+  if(!r.error&&r.status===0)return {checked:true,method:'ps',processes:parseMacProcesses(r.stdout)};
+  // 两个命令都只读取进程；使用本环境已允许的能力，不把ps不可执行当成进程不存在。
+  const fallback=run('/usr/bin/pgrep',['-fl','wechatwebdevtools'],{encoding:'utf8',timeout:3000});
+  if(!fallback.error&&[0,1].includes(fallback.status))return {checked:true,method:'pgrep',processes:parseMacProcesses(fallback.stdout),previousError:r.error?.message||r.stderr?.trim()};
+  return {checked:false,error:'ps: '+(r.error?.message||r.stderr?.trim()||'读取失败')+'; pgrep: '+(fallback.error?.message||fallback.stderr?.trim()||'读取失败')};
 }
 
 /** 实际发出只读协议命令，核对窗口工程；HTTP可连接不等于协议可用。 */
@@ -75,11 +87,11 @@ export async function inspectDebugChannel({port,project,read=readLocalTargets,pr
     result.error={code:e.code||null,message:e.message};
     if(connected){result.status='protocol-unavailable';result.protocol={available:false,reason:e.message};result.advice='HTTP通道仍可连接，但目标窗口协议未通过。保留错误，核对窗口状态，不因本次协议失败重启或改端口。';return result}
     const info=processInfo();
-    result.processCheck={checked:info.checked,error:info.error};result.processes=info.processes||[];
+    result.processCheck={checked:info.checked,method:info.method,error:info.error,previousError:info.previousError};result.processes=info.processes||[];
     result.status=['EPERM','EACCES'].includes(e.code)?'permission-blocked':e.code==='ECONNREFUSED'?'not-listening':'unreachable';
     const other=result.processes.map(p=>p.debugPort).filter(p=>p&&p!==port);
     result.advice=other.length?'进程实际调试端口为 '+[...new Set(other)].join('、')+'；核对并统一检测参数，不换端口重启。'
-      :!info.checked||result.status==='permission-blocked'?'检查受到权限限制或进程状态无法核实；使用当前agent的权限申请流程，不把读取失败当成进程已退出，不继续重复启动。'
+      :!info.checked||result.status==='permission-blocked'?'检查受到权限限制或进程状态无法核实；按debug-channel.md提供已填好路径的用户终端或CMD命令，不把读取失败当成进程已退出，不重复启动。'
       :result.processes.length&&result.processes.every(p=>p.debugPort===null)?'运行中的主进程没有调试参数；继续等待不会开启端口。按debug-channel.md准备，启动前须取得重启授权。'
       :'通道未连接；按debug-channel.md核对主进程、启动日志和本机访问权限，不盲目重启。';
     if(result.environment.electronNodeModeVariableSet)result.advice+=' 当前环境设置了ELECTRON_RUN_AS_NODE；GUI启动子进程须仅移除该变量，否则Electron可能按Node解析调试参数。';

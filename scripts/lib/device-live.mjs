@@ -19,6 +19,8 @@ export async function createLiveDeviceSession(project, opts = {}) {
   outside(project, opts.backupDir);
   const backupFile = path.join(opts.backupDir, 'device-backup.json');
   if (fs.existsSync(backupFile)) throw Error('已有机型备份，请使用新的输出目录：' + backupFile);
+  const waitMs = Number(opts.waitMs ?? 30000);
+  if (!Number.isFinite(waitMs) || waitMs <= 0) throw Error('waitMs必须为正数');
   const port = Number(opts.port || process.env.WECHATIDE_DEBUG_PORT || 9223);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('debug-port 必须为有效本机端口');
   let client = opts.transport, targetId = 'test';
@@ -26,7 +28,7 @@ export async function createLiveDeviceSession(project, opts = {}) {
     let targets;
     try {
       targets = await readLocalTargets(port);
-    } catch (e) { throw Error('本机调试通道不可用，需先获得用户许可，一次性开启工具调试端口；不自动重启、不退回逐机型重开。原因：' + e.message); }
+    } catch (e) { throw Error('本机调试通道不可用，按debug-channel.md检查并准备已有或已获准的通道，再继续本批；不逐机型重开。原因：' + e.message); }
     const matching = targets.filter(x => {
       try { return x.type === 'page' && /\/electron-project(?:-lite)?\.html$/.test(new URL(x.url).pathname) && path.resolve(new URL(x.url).searchParams.get('projectpath') || '') === project; }
       catch { return false; }
@@ -42,7 +44,10 @@ export async function createLiveDeviceSession(project, opts = {}) {
       await client.evaluate(`(()=>{const fs=require('fs'),path=require('path'),root=${JSON.stringify(MODULES)};const entries=fs.readdirSync(root).filter(f=>f.endsWith('.js')).map(file=>({file,source:fs.readFileSync(path.join(root,file),'utf8')}));return (${discoverDeviceModules.toString()})(entries);})()`);
   } catch(e) { client.close(); throw e; }
   const prefix = `const store=require(${JSON.stringify(MODULES+modules.store)}).default;const state=store.getState();if(state.project.current.projectpath!==${JSON.stringify(project)})throw Error('目标项目已改变');`;
-  const evaluate = (body, timeout) => client.evaluate(`(async()=>{${prefix}${body}})()`, timeout);
+  const evaluate = async (body, timeout) => {
+    try { return await client.evaluate(`(async()=>{${prefix}${body}})()`, timeout); }
+    catch (e) { if (/项目调试连接(?:已关闭|失败|超时)/.test(e.message)) e.connectionUnavailable = true; throw e; }
+  };
   const sessionId = 'autocheck_' + randomUUID(); let sequence = 0, changed = false, original, originalRoute;
   async function request(method, params = {}, timeout = 10000) {
     const message = { id: sessionId + '_' + ++sequence, method, params };
@@ -81,7 +86,7 @@ export async function createLiveDeviceSession(project, opts = {}) {
   const runtime = async timeout => (await call('automation_evaluate', ['--fn-source', RUNTIME], { timeout })).result.result.result;
   async function ready(device) {
     const attempts = []; let previous = null;
-    const deadline = Date.now() + 12000;
+    const deadline = Date.now() + waitMs;
     while (Date.now() < deadline) {
       const start = Date.now();
       try {
@@ -91,11 +96,11 @@ export async function createLiveDeviceSession(project, opts = {}) {
         attempts.push({ ms: Date.now()-start, match: !!match, ...(match ? {} : { expected: device.info, actual: { screenWidth:w?.screenWidth, screenHeight:w?.screenHeight, pixelRatio:w?.pixelRatio, model:data?.device?.model } }) });
         if (signature && signature === previous) return { runtime: data, readiness: attempts };
         previous = signature;
-      } catch (e) { previous = null; attempts.push({ ms: Date.now()-start, error: e.message }); }
+      } catch (e) { if (e.connectionUnavailable) throw e; previous = null; attempts.push({ ms: Date.now()-start, error: e.message }); }
       // 短间隔有界就绪探测，给渲染/系统切换时间；没有固定长等待。
       await new Promise(resolve => setTimeout(resolve, 100));
     }
-    const e = Error('目标机型未在12秒内稳定：' + device.name); e.attempts = attempts; throw e;
+    const e = Error('本次等待预算内尚未确认目标机型就绪：' + device.name); e.attempts = attempts; throw e;
   }
   async function select(index) {
     await evaluate(`store.dispatch(require(${JSON.stringify(MODULES+modules.actions)}).default.selectDevice(${index}));return true;`);

@@ -51,3 +51,13 @@ export function readEditorPanels({editor,project,fs,path,maxBytes=2*1024*1024}) 
   }catch(e){output=missing(e.message)}
   return {problems,output};
 }
+
+/** 独立保存四个诊断来源；一个来源失败不丢弃其他证据。 */
+export async function readDiagnosticSources(readers) {
+  const result = {};
+  for (const name of ['build', 'quality', 'problems', 'output']) {
+    try { result[name] = await readers[name](); }
+    catch (e) { result[name] = { available: false, reason: e.message }; }
+  }
+  return result;
+}

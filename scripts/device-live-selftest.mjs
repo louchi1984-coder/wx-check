@@ -52,7 +52,7 @@ await test('采集抛错也在 finally 恢复，不能只恢复配置',async()=>
   assert.equal(f.state.current,0);assert.deepEqual(f.state.selected,[1,0]);
 });
 await test('旧运行尺寸不算切换成功；探测有上限且失败后仍恢复',async()=>{
-  const f=fixture({stale:true}),s=await createLiveDeviceSession(f.project,f);
+  const f=fixture({stale:true}),s=await createLiveDeviceSession(f.project,{...f,waitMs:1200});
   try{await assert.rejects(()=>s.switchTo('B'),e=>e.attempts.length>=10);assert((await s.restore()).restored);assert.equal(f.state.current,0);}finally{s.close();}
 });
 await test('目标路径改变时停止，并关闭连接，不生成成功备份',async()=>{

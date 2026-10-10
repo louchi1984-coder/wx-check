@@ -99,7 +99,7 @@ async function main() {
       if (selected.some(x => !['minimal','precise'].includes(x.mode))) throw new Error('mode 必须为 minimal 或 precise');
       batch = { planned: selected, failures: [], restoration: null };
       const switchMode = 'live';
-      const session = await createLiveDeviceSession(project, { backupDir: path.join(out, 'backup'), port: arg('debug-port', process.env.WECHATIDE_DEBUG_PORT || 9223) });
+      const session = await createLiveDeviceSession(project, { backupDir: path.join(out, 'backup'), port: arg('debug-port', process.env.WECHATIDE_DEBUG_PORT || 9223), waitMs: Number(arg('wait-ms', 30000)) });
       batch.switchMode = switchMode;
       try {
         for (const [index, item] of selected.entries()) {
@@ -115,8 +115,8 @@ async function main() {
             fs.mkdirSync(dir,{recursive:true});
             fs.writeFileSync(path.join(dir,'report.json'),JSON.stringify(r,null,2));
             fs.writeFileSync(path.join(dir,'report.md'),readable([r]));
-            if (r.incomplete) break;
-          } catch (e) { batch.failures.push({device:item.name,error:e.message,attempts:e.attempts}); break; }
+            if (r.aborted) break;
+          } catch (e) { batch.failures.push({device:item.name,error:e.message,attempts:e.attempts}); if (e.connectionUnavailable) break; }
         }
       } finally {
         try { batch.restoration = await session.restore(); }
