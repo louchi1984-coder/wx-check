@@ -4,6 +4,8 @@
 
 先读[当前官方automator接口](official-tool-skill.md)，命令统一为`wechatide -c <已授权clientName> <工具名> --project <工程绝对路径> <参数>`；参数和路径按当前帮助及[工具细节](tool-details.md)核对。
 
+先读取本轮已有连接信息，沿用已核实的CLI路径、clientName与工程；用automation_runtime_info核对实际当前页。不因开始新测试重新登录或开启端口。
+
 | 检查目标 | 调用工具 | 怎样确认结果 | 失败后怎么办 |
 | --- | --- | --- | --- |
 | 页面与目标定位 | automation_runtime_info及当前官方元素查询接口 | 当前路由、元素内容、唯一目标与前置状态一致 | 查询不到或不唯一时调整定位与前置操作，不判定按钮坏了 |

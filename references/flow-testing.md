@@ -4,6 +4,8 @@
 
 先读[当前官方automator接口](official-tool-skill.md)，沿用已授权clientName、实际工程及[工具细节](tool-details.md)中的配置；从真实入口操作，不能用evaluate直接执行业务处理函数代替使用。
 
+先读取本轮已有连接信息，沿用已核实的CLI路径、clientName与工程；用automation_runtime_info核对实际当前页。不因开始新测试重新登录或开启端口。
+
 | 检查目标 | 调用工具 | 怎样确认结果 | 失败后怎么办 |
 | --- | --- | --- | --- |
 | 进入、填写、选择、提交与返回 | automation_runtime_info、automation_element_action及当前导航接口 | 每步核对实际页面和输入值，再继续下一步 | 按实际状态调整；目标不唯一时定位具体项，不整批重复提交 |

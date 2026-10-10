@@ -8,14 +8,14 @@
 
 ## 工具调用与核验
 
-先读[当前官方接口](official-tool-skill.md)中的compiler、debugger说明；沿用已授权clientName和目标工程。官方命令的参数示例见该说明，路径与运行时配置见[工具细节](tool-details.md)。
+先读[当前官方接口](official-tool-skill.md)中的compiler、debugger说明；沿用已授权clientName和目标工程。官方命令的参数示例见该说明，路径与运行时配置见[工具细节](tool-details.md)。已有本轮连接记录先读取并沿用；首次CDP验证后按[通道说明](debug-channel.md#3-验证并使用)保存记录。
 
 | 检查目标 | 调用工具 | 怎样确认结果 | 失败后怎么办 |
 | --- | --- | --- | --- |
 | 实际运行页与完整模式 | open_project_window、automation_runtime_info | 工程路径正确，返回具体页面；内部读取的编辑器服务可用 | reuse不代表已转为完整模式；按已有授权处理重开，不自动重置 |
 | WXML/WXSS编译 | compile_wxml / compile_wxss，--file-path相对miniprogramRoot | 核对完整返回、实际错误文件与消息；成功不代表JS及整包通过 | 保留错误，继续其他来源；不安装依赖来凑通过 |
 | 调试器日志与请求 | get_simulator_console / get_simulator_network，--command "grep -n ." | 逐条解释error/warning和失败请求，核对采集时间与范围 | 空缓冲不证明无异常；按实际可用面板或绑定日志补查 |
-| 构建、代码质量、问题、输出 | prepare-debug-channel.mjs后调用read-ide-diagnostics.mjs | 通道ready、projectMatches为1；核对quality、build.scope、problems.available及output通道的available/complete/truncated | 按[通道说明](debug-channel.md)处理一次；用可用的绑定日志或获准界面补查，不能拿console替代代码质量 |
+| 构建、代码质量、问题、输出 | prepare-debug-channel.mjs后调用read-ide-diagnostics.mjs | 通道ready、projectMatches为1、protocol.available为true；核对quality、build.scope、problems.available及output通道的available/complete/truncated | 按[通道说明](debug-channel.md)处理一次；用可用的绑定日志或获准界面补查，不能拿console替代代码质量 |
 | 调试控制台、相关终端及工程已有检查 | 当前debugger接口、会话记录及已有命令 | 对应会话、完整消息、退出码和检查范围 | 确无对应会话或命令才标不适用；未查到、没运行不能标通过 |
 
 内部读取调用如下；脚本路径、端口和输出路径替换为当前实际值，输出放工程外：

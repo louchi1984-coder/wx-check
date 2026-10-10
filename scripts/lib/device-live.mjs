@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { discoverDeviceModules } from './diagnostic-modules.mjs';
-import { readLocalTargets } from './local-debug.mjs';
+import { readLocalTargets, connectLocalTarget } from './local-debug.mjs';
 
 const MODULES = (process.env.WECHATIDE_MODULES_DIR || '/Applications/wechatwebdevtools.app/Contents/Resources/app.asar/js/').replace(/[\\/]+$/, '') + '/';
 const RUNTIME = 'function(){var ps=getCurrentPages();return {window:wx.getWindowInfo(),device:wx.getDeviceInfo(),route:ps[ps.length-1].route};}';
@@ -11,35 +11,6 @@ const outside = (project, dir) => {
   const relative = path.relative(project, path.resolve(dir));
   if (!relative || (!relative.startsWith('..' + path.sep) && !path.isAbsolute(relative))) throw Error('备份及截图必须在工程之外');
 };
-
-async function connect(url) {
-  const ws = new WebSocket(url), pending = new Map(); let id = 0;
-  ws.addEventListener('message', event => {
-    const data = JSON.parse(event.data), entry = pending.get(data.id);
-    if (!entry) return;
-    clearTimeout(entry.timer); pending.delete(data.id);
-    data.error ? entry.reject(Error(data.error.message)) : entry.resolve(data.result);
-  });
-  ws.addEventListener('close', () => {
-    for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(Error('项目调试连接已关闭')); }
-    pending.clear();
-  });
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { ws.close(); reject(Error('项目调试连接超时')); }, 5000);
-    ws.addEventListener('error', () => { clearTimeout(timer); reject(Error('项目调试连接失败')); }, { once: true });
-    ws.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
-  });
-  return { close: () => ws.close(), async evaluate(expression, timeout = 15000) {
-    const requestId = ++id;
-    const result = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(requestId); reject(Error('窗口脚本调用超时')); }, timeout);
-      pending.set(requestId, { resolve, reject, timer });
-      ws.send(JSON.stringify({ id: requestId, method: 'Runtime.evaluate', params: { expression, returnByValue: true, awaitPromise: true } }));
-    });
-    if (result.exceptionDetails) throw Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
-    return result.result.value;
-  } };
-}
 
 /** opts.transport 供回归测试模拟窗口；生产只连接 localhost，且只选择路径完全匹配的项目。 */
 export async function createLiveDeviceSession(project, opts = {}) {
@@ -63,7 +34,7 @@ export async function createLiveDeviceSession(project, opts = {}) {
     if (matching.length !== 1) throw Error('无法唯一定位目标工程窗口：' + matching.length + ' 个');
     const url = new URL(matching[0].webSocketDebuggerUrl);
     if (url.protocol !== 'ws:' || url.hostname !== '127.0.0.1' || Number(url.port) !== port) throw Error('拒绝连接非预期本机调试地址');
-    client = await connect(url.href); targetId = matching[0].id;
+    client = await connectLocalTarget(matching[0],port); targetId = matching[0].id;
   }
   let modules;
   try {

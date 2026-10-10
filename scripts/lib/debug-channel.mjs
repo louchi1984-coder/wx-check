@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { readLocalTargets } from './local-debug.mjs';
+import { readLocalTargets, connectLocalTarget } from './local-debug.mjs';
 
 export function resolveDebugPort(explicit, env=process.env) {
   const port=Number(explicit ?? env.WECHATIDE_DEBUG_PORT ?? 9223);
@@ -45,20 +45,37 @@ export function readProcessInfo() {
   return {checked:true,processes:parseMacProcesses(r.stdout)};
 }
 
-/** 只读：不调用可能自动拉起IDE的CLI，不退出、不启动任何应用。 */
-export async function inspectDebugChannel({port,project,read=readLocalTargets,processInfo=readProcessInfo,env=process.env}={}) {
+/** 实际发出只读协议命令，核对窗口工程；HTTP可连接不等于协议可用。 */
+export async function probeDebugTarget(target,{port,project,timeout=3000}) {
+  const client=await connectLocalTarget(target,port,timeout);
+  try{
+    const actual=new URL(await client.evaluate('location.href',timeout));
+    if(!/\/electron-project(?:-lite)?\.html$/.test(actual.pathname)||path.resolve(actual.searchParams.get('projectpath')||'')!==path.resolve(project))throw Error('协议返回的工程窗口与目标不一致');
+    return {available:true,method:'Runtime.evaluate',projectVerified:true};
+  }finally{client.close()}
+}
+
+/** 先检查并复用通道，只有HTTP连接失败才核对进程；不登录、退出或启动。 */
+export async function inspectDebugChannel({port,project,read=readLocalTargets,probe=probeDebugTarget,processInfo=readProcessInfo,env=process.env}={}) {
   port=resolveDebugPort(port,env);
-  const info=processInfo();
-  const result={time:new Date().toISOString(),port,environment:{electronNodeModeVariableSet:Boolean(env.ELECTRON_RUN_AS_NODE)},processCheck:{checked:info.checked,error:info.error},processes:info.processes||[]};
+  let connected=false;
+  const result={time:new Date().toISOString(),project:project?path.resolve(project):null,port,environment:{electronNodeModeVariableSet:Boolean(env.ELECTRON_RUN_AS_NODE)},processCheck:{checked:false,skipped:true},processes:[]};
   try{
     const targets=await read(port,3000);
+    connected=true;
     result.status='ready';result.targetCount=targets.length;
-    if(project)result.projectMatches=targets.filter(t=>{
+    const matching=targets.filter(t=>{
       try{const u=new URL(t.url);return t.type==='page'&&/\/electron-project(?:-lite)?\.html$/.test(u.pathname)&&path.resolve(u.searchParams.get('projectpath')||'')===path.resolve(project)}catch{return false}
-    }).length;
+    });
+    if(project)result.projectMatches=matching.length;
+    if(project&&matching.length===1)result.protocol=await probe(matching[0],{port,project});
+    else result.protocol={available:false,reason:'未唯一指定工程窗口，仅检查HTTP通道'};
     result.advice=project&&result.projectMatches!==1?'调试通道可连接，但目标工程窗口无法唯一确定；核对工程路径，不重启。':'调试通道可连接，复用现有进程。';
   }catch(e){
     result.error={code:e.code||null,message:e.message};
+    if(connected){result.status='protocol-unavailable';result.protocol={available:false,reason:e.message};result.advice='HTTP通道仍可连接，但目标窗口协议未通过。保留错误，核对窗口状态，不因本次协议失败重启或改端口。';return result}
+    const info=processInfo();
+    result.processCheck={checked:info.checked,error:info.error};result.processes=info.processes||[];
     result.status=['EPERM','EACCES'].includes(e.code)?'permission-blocked':e.code==='ECONNREFUSED'?'not-listening':'unreachable';
     const other=result.processes.map(p=>p.debugPort).filter(p=>p&&p!==port);
     result.advice=other.length?'进程实际调试端口为 '+[...new Set(other)].join('、')+'；核对并统一检测参数，不换端口重启。'

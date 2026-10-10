@@ -7,7 +7,7 @@
 | 工具 | 用途 | 边界 |
 | --- | --- | --- |
 | prepare-debug-channel.mjs | 检查实际端口、工程窗口，授权后准备通道 | 按[通道说明](debug-channel.md)，失败不循环重启 |
-| check-debug-channel.mjs | 独立只读复查通道 | 不登录、不打开工程 |
+| check-debug-channel.mjs | 只读协议探活，可保存本轮连接信息 | 不登录、不打开工程 |
 | read-ide-diagnostics.mjs | 保存构建、代码质量、问题及输出原始证据 | 按[诊断说明](official-tool-skill.md)核对范围，空队列不证明无问题 |
 | ui-check.mjs | 同窗口批量切机型、读取尺寸／矩形、保存截图及恢复 | 按[UI说明](ui-batch.md)；截图仍须读图，几何采集不等于完整UI测试 |
 | launch-debug-channel.mjs | 准备入口的底层启动器 | 普通测试不单独调用 |
@@ -16,13 +16,13 @@
 
 下文及各参考文件的`node scripts/...`命令从skill目录执行；在其他目录调用时，改用脚本绝对路径。需要能运行ES模块及内置WebSocket的Node运行时（现有CDP工具要求Node 22或更新），先核对当前可用运行时，不把缺少运行时当连接失败。
 
-官方调用统一用`wechatide -c <已授权clientName> <工具名> <参数>`。辅助脚本调用CLI时，沿用同一身份：设置WECHATIDE_CLIENT为已授权名称（默认miniprogram-autocheck），WECHATIDE_BIN为当前官方wechatide路径，不混用旧cli。UI机型目录找不到时设置实际WECHATIDE_DATA_DIR；批量UI在默认macOS安装之外须设置实际WECHATIDE_MODULES_DIR，诊断读取器则会先从窗口地址发现模块目录。环境变量在当前执行进程生效；不同工具调用不一定保留上一条命令的export。
+官方调用统一用`wechatide -c <已授权clientName> <工具名> <参数>`。辅助脚本调用CLI时，沿用同一身份：设置WECHATIDE_CLIENT为已授权名称（默认miniprogram-autocheck），WECHATIDE_BIN为当前官方wechatide路径，不混用旧cli。UI机型目录找不到时设置实际WECHATIDE_DATA_DIR；批量UI在默认macOS安装之外须设置实际WECHATIDE_MODULES_DIR，诊断读取器则会先从窗口地址发现模块目录。环境变量在当前执行进程生效；不同工具调用不一定保留上一条命令的export。按[通道说明](debug-channel.md#3-验证并使用)保存本轮连接信息，后续测试或任务恢复时读取并沿用；不能用旧记录冒充当前探活结果。
 
 ## 参数与结果
 
 | 入口 | 必要参数与结果 |
 | --- | --- |
-| prepare-debug-channel / check-debug-channel | --project为工程绝对路径，--port为CDP端口；退出0且工程匹配数为1才可读取。授权启动的额外参数按通道说明；不使用--out |
+| prepare-debug-channel / check-debug-channel | --project为工程绝对路径，--port为CDP端口；退出0且工程匹配数为1才可读取。授权启动的额外参数按通道说明；prepare不使用--out，check可用--out保存工程外新JSON，需protocol.available为true |
 | read-ide-diagnostics | --project、--port、--out；--out是工程外JSON文件。保存成功后检查quality、build.scope、problems.available及output各通道的available/complete/truncated，不能把文件生成当所有来源完整读取 |
 | ui-check --plan | --project；不切机型、不截图。未设六款精测时列机型目录，设置后列精测与最小检查计划 |
 | ui-check --matrix | --project、--out工程外目录；先设置六款WECHATIDE_PRECISE_MODELS，端口参数用--debug-port。完成后检查failures、unvisited、restoration及每页采集/截图结果 |
@@ -32,7 +32,7 @@ UI工具的report.json、report.md和shots目录是采集附件，单项报告�
 
 ## 调用与判断
 
-CLI输出可能夹带日志；按实际完整JSON检查ok及result.success，退出码0不代表业务成功。返回结构与参数查当前官方帮助，不能沿用旧版本猜测。编译入口可能触发整工程编译，错误归属按实际消息，不按调用文件猜测。
+CLI输出可能夹带日志；按实际完整JSON检查ok及result.success，退出码0不代表业务成功；非零退出即使夹有成功JSON也不能当作成功。失败保留退出码、信号和完整原始输出。返回结构与参数查当前官方帮助，不能沿用旧版本猜测。编译入口可能触发整工程编译，错误归属按实际消息，不按调用文件猜测。
 
 开窗后等到具体运行页再操作，已有正确状态直接继续。空字符串输入曾出现返回成功却未清空，必要时用官方元素input事件并读回验证。点击可能改变hover类，定位失败时读取实际元素属性；使用唯一且明确的目标，不修改应用来迁就测试。
 

@@ -17,19 +17,21 @@ if(options.authorized){
   if(fs.existsSync(options.log))throw Error('日志已存在，禁止覆盖');
   options.quit=original=>{
     if(path.resolve(original.executable)!==path.resolve(options.executable))throw Error('当前主进程与指定程序不一致，停止退出');
-    wechatide('quit',[],{bin:options.cli,timeout:10000});
+    const response=wechatide('quit',[],{bin:options.cli,timeout:10000});
+    if(response.ok===false||response.result?.success!==true)throw Object.assign(Error('官方CLI未确认正常退出'),{output:JSON.stringify(response)});
   };
   options.launch=()=>{
     const flags=['--executable',options.executable,'--log',options.log,'--start-authorized'];
     if(options.port)flags.push('--port',options.port);
     const r=spawnSync(process.execPath,[fileURLToPath(new URL('./launch-debug-channel.mjs',import.meta.url)),...flags],{encoding:'utf8',timeout:10000});
-    if(r.error||r.status!==0)throw Error(r.error?.message||r.stderr||'启动器失败');
-    return JSON.parse(r.stdout);
+    if(r.error||r.status!==0)throw Object.assign(Error(r.error?.message||r.stderr||'启动器失败'),{code:r.error?.code,exitCode:r.status,signal:r.signal,stdout:r.stdout,stderr:r.stderr});
+    try{return JSON.parse(r.stdout)}catch(e){throw Object.assign(Error('启动器结果格式异常：'+e.message),{exitCode:r.status,stdout:r.stdout,stderr:r.stderr})}
   };
   options.readLog=()=>fs.existsSync(options.log)?fs.readFileSync(options.log,'utf8'):'';
 }
 try{
   const result=await prepareDebugChannel(options);
+  if(options.log)result.launchLog={path:options.log,available:fs.existsSync(options.log)};
   console.log(JSON.stringify(result,null,2));
   process.exitCode=result.status==='ready'?0:2;
 }catch(e){console.error(JSON.stringify({status:'preparation-failed',reason:e.message}));process.exitCode=2}

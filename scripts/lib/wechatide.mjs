@@ -85,8 +85,9 @@ export function wechatide(tool, args = [], opts = {}) {
     fd = -1;
     out = fs.existsSync(outFile) ? fs.readFileSync(outFile, 'utf8') : '';
     timedOut = r && r.signal === 'SIGKILL';
-    if (timedOut || r?.error?.code === 'ETIMEDOUT') throw new Error(tool + ' 超过 ' + Math.round(timeout / 1000) + ' 秒无响应，已终止');
-    if (!out && r && r.error) throw new Error(tool + ' 调用失败: ' + r.error.message);
+    const failure = message => Object.assign(new Error(message), {code:r.error?.code,exitCode:r.status,signal:r.signal,output:out});
+    if (timedOut || r?.error?.code === 'ETIMEDOUT') throw failure(tool + ' 超过 ' + Math.round(timeout / 1000) + ' 秒无响应，已终止');
+    if (r.error || r.status !== 0) throw failure(tool + ' 调用失败: ' + (r.error?.message || '退出码 ' + r.status));
   } finally {
     if (fd >= 0) {
       try {
@@ -102,8 +103,9 @@ export function wechatide(tool, args = [], opts = {}) {
     }
   }
 
-  if (!out) throw new Error(tool + ' 无输出');
+  if (!out) throw Object.assign(new Error(tool + ' 无输出'),{exitCode:0,output:out});
   const json = extractJson(out);
-  if (!json) throw new Error(tool + ' 未返回 JSON: ' + out.slice(0, 200));
-  return JSON.parse(json);
+  if (!json) throw Object.assign(new Error(tool + ' 未返回 JSON: ' + out.slice(0, 200)),{exitCode:0,output:out});
+  try { return JSON.parse(json); }
+  catch (e) { throw Object.assign(new Error(tool + ' 返回 JSON 格式异常: ' + e.message),{exitCode:0,output:out}); }
 }
