@@ -6,11 +6,25 @@
 
 执行者结合源码与当前官方编译、日志、网络接口判断程序正确性。read-ide-diagnostics.mjs只补充构建队列、代码质量、问题列表和输出通道的原始证据，不代替判断。问题与输出读取不依赖系统无障碍；编辑器需在完整模式初始化。未读取或只读到部分时说明缺口，错误关键字须核对来源与影响。
 
-## 官方接口发现
+## 工具调用与核验
 
-读取内部构建和代码质量之前，先按[本机调试通道](debug-channel.md)运行只读检查；复用已验证的实际端口。通道准备不能等到UI测试才做，读取失败不自动重启。
+先读[当前官方接口](official-tool-skill.md)中的compiler、debugger说明；沿用已授权clientName和目标工程。官方命令的参数示例见该说明，路径与运行时配置见[工具细节](tool-details.md)。
 
-先读取 [开发者工具自带skill与诊断接口](official-tool-skill.md)，核对当前官方索引、compiler和debugger子skill及命令帮助，实际使用已登记的编译、console、network和运行状态接口。本机调试通道可用时按official-tool-skill.md运行read-ide-diagnostics.mjs补取代码质量与构建证据，检查结果字段和队列范围。输出编辑器读不到时检查实际日志文件，不只停在截图。不得直接从“没找到面板命令”跳到“整个诊断没有CLI接口”。面板专用接口缺失与采集权限阻塞分别记录；接口证据不能冒充面板全部检查。
+| 检查目标 | 调用工具 | 怎样确认结果 | 失败后怎么办 |
+| --- | --- | --- | --- |
+| 实际运行页与完整模式 | open_project_window、automation_runtime_info | 工程路径正确，返回具体页面；内部读取的编辑器服务可用 | reuse不代表已转为完整模式；按已有授权处理重开，不自动重置 |
+| WXML/WXSS编译 | compile_wxml / compile_wxss，--file-path相对miniprogramRoot | 核对完整返回、实际错误文件与消息；成功不代表JS及整包通过 | 保留错误，继续其他来源；不安装依赖来凑通过 |
+| 调试器日志与请求 | get_simulator_console / get_simulator_network，--command "grep -n ." | 逐条解释error/warning和失败请求，核对采集时间与范围 | 空缓冲不证明无异常；按实际可用面板或绑定日志补查 |
+| 构建、代码质量、问题、输出 | prepare-debug-channel.mjs后调用read-ide-diagnostics.mjs | 通道ready、projectMatches为1；核对quality、build.scope、problems.available及output通道的available/complete/truncated | 按[通道说明](debug-channel.md)处理一次；用可用的绑定日志或获准界面补查，不能拿console替代代码质量 |
+| 调试控制台、相关终端及工程已有检查 | 当前debugger接口、会话记录及已有命令 | 对应会话、完整消息、退出码和检查范围 | 确无对应会话或命令才标不适用；未查到、没运行不能标通过 |
+
+内部读取调用如下；脚本路径、端口和输出路径替换为当前实际值，输出放工程外：
+
+```sh
+node "<skill绝对目录>/scripts/read-ide-diagnostics.mjs" --project "<工程绝对路径>" --port <已验证实际端口> --out "<工程外诊断JSON路径>"
+```
+
+通道准备在代码测试内完成，不等到UI测试。通道受阻不影响源码、官方编译和可用日志检查，但构建、问题、输出和代码质量仍是必查来源；逐项补查，确实无法读取时保留缺口并交付部分完成的代码报告。不得从“没找到面板专用命令”推断“没有诊断接口”，也不得把接口片段称为面板全部内容。
 
 ## 必查来源
 
