@@ -39,3 +39,17 @@ CLI输出可能夹带日志；按实际完整JSON检查ok及result.success，退
 UI采集只提供横向溢出、点击区域及稳定性线索，44×44阈值不是自动修复决定。条件渲染、合法空态与遗漏按实际页面判断。重叠、截断、遮挡和布局感受仍由执行者读图及按疑点操作确认。IDE的automator超时与调用进程超时分开；采集只对前者等待20秒重试一次，不重放业务提交。
 
 报告、截图和必要的数据备份保存在工程外。统一报告见[报告规范](reporting.md)，修复与数据保护分别见[修复](repair.md)、[执行条件](execution.md)。
+
+## 维护检查
+
+
+以下自检验证通用工具的协议与失败处理，不是小程序项目的检测结果；普通使用不需要先运行它们：
+
+```sh
+node scripts/debug-channel-selftest.mjs
+node scripts/diagnostics-selftest.mjs
+node scripts/device-live-selftest.mjs
+node scripts/ui-batch-selftest.mjs
+```
+
+测试夹具在临时目录创建，发布包不含业务工程或历史测试数据。工具内部接口升级后按实际能力重新核验；具体工程和开发者工具版本的运行结果须以实测为准。
