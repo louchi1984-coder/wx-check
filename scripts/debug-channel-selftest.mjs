@@ -115,6 +115,19 @@ await test('退出状态不明确时禁止启动和强杀',async()=>{
   const r=await prepareDebugChannel({authorized:true,check:async()=>{checks++;return ordinary},quit:()=>{},launch:()=>starts++,now:()=>time,pause:async ms=>{time+=ms}});
   assert.equal(r.status,'exit-pending');assert.equal(starts,0);assert.equal(time,30000);
 });
+await test('退出后被其他调用拉起的新实例不误报旧进程未退出',async()=>{
+  let checks=0,quits=0,starts=0,waits=0;
+  const replacement={...ordinary,processes:[{...ordinary.processes[0],pid:34}]};
+  const r=await prepareDebugChannel({authorized:true,check:async()=>[ordinary,replacement][checks++],quit:()=>quits++,launch:()=>starts++,pause:async()=>waits++});
+  assert.equal(r.status,'inspection-required');assert.deepEqual(r.exitCheck,{originalPid:12,currentPids:[34]});
+  assert.equal(quits,1);assert.equal(starts,0);assert.equal(waits,0);
+});
+await test('退出等待期间通道已经通过协议核验时直接复用，不要求再读进程',async()=>{
+  let checks=0,starts=0;
+  const ready={...missing,status:'ready',projectMatches:1,protocol:{available:true},processCheck:{checked:false,skipped:true}};
+  const r=await prepareDebugChannel({project:'/fixture',authorized:true,check:async()=>[ordinary,ready][checks++],quit:()=>{},launch:()=>starts++});
+  assert.equal(r.status,'ready');assert.equal(starts,0);assert.equal(checks,2);
+});
 await test('启动沙箱错误即停止，假就绪不覆盖原始失败，不重试',async()=>{
   let checks=0,starts=0;
   const r=await prepareDebugChannel({authorized:true,check:async()=>{checks++;return missing},launch:()=>starts++,readLog:()=> 'sandbox initialization failed: Operation not permitted'});
@@ -215,6 +228,18 @@ await test('保存连接信息包含工程、端口与CLI身份，已有文件�
       assert.equal((await run()).code,0);assert.equal(fs.readFileSync(out,'utf8'),before);assert.equal(fs.readdirSync(dir).length,2);
     },()=>({result:{result:{value:'file:///app/electron-project.html?projectpath=%2Ffixture'}}}));
   }finally{fs.rmSync(dir,{recursive:true,force:true})}
+});
+await test('尚未选工程时准备入口只核验HTTP，不把它当工程协议已通过',async()=>{
+  await protocolFixture(async({port})=>{
+    const r=await new Promise((resolve,reject)=>{
+      const child=spawn(process.execPath,[fileURLToPath(new URL('./prepare-debug-channel.mjs',import.meta.url)),'--port',String(port)]);
+      let stdout='',stderr='';child.stdout.on('data',b=>stdout+=b);child.stderr.on('data',b=>stderr+=b);
+      child.on('error',reject);child.on('close',code=>resolve({code,stdout,stderr}));
+    });
+    assert.equal(r.code,0,r.stderr);const result=JSON.parse(r.stdout);
+    assert.equal(result.status,'ready');assert.equal(result.check.project,null);
+    assert.equal(result.check.protocol.available,false);assert.equal(result.check.projectMatches,undefined);
+  },()=>{throw Error('未指定工程时不应发送工程协议命令')});
 });
 await test('退出失败保留原始错误及退出码，停止启动',async()=>{
   let starts=0;

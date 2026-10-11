@@ -34,8 +34,11 @@ export async function prepareDebugChannel({port,project,authorized=false,waitMs=
     const deadline=now()+waitMs;
     do{
       state=await inspect();
+      if(state.status==='ready')return result(project&&state.projectMatches!==1?'project-unresolved':'ready',state.advice);
+      if(state.status==='protocol-unavailable')return result('protocol-unavailable',state.advice);
       if(!state.processCheck.checked)return result('execution-blocked','退出后的进程状态无法核对；不继续启动。');
       if(!state.processes.length)break;
+      if(!state.processes.some(p=>p.pid===original.pid))return result('inspection-required','原主进程已退出，但出现了新的开发者工具实例；核对并暂停可能自动拉起工具的CLI调用，不继续等待旧进程或启动第二实例。',{exitCheck:{originalPid:original.pid,currentPids:state.processes.map(p=>p.pid)}});
       if(now()>=deadline)return result('exit-pending','本次等待结束，尚未确认退出；继续只读核对，不强杀、不重复发退出命令。');
       await pause(500);
     }while(true);

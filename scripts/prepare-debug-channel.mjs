@@ -10,10 +10,10 @@ import { wechatide } from './lib/wechatide.mjs';
 const args=process.argv.slice(2),options={};
 for(let i=0;i<args.length;i++){
   if(args[i]==='--restart-authorized'){options.authorized=true;continue}
-  if(!['--project','--port','--executable','--cli','--log','--wait-ms','--launch-method'].includes(args[i])||!args[i+1]||args[i+1].startsWith('--'))throw Error('用法：node scripts/prepare-debug-channel.mjs --project <工程> [--port <端口>] [--wait-ms <等待预算>] [--restart-authorized --executable <实际程序> --cli <官方CLI> --log <日志>]');
+  if(!['--project','--port','--executable','--cli','--log','--wait-ms','--launch-method'].includes(args[i])||!args[i+1]||args[i+1].startsWith('--'))throw Error('用法：node scripts/prepare-debug-channel.mjs [--project <工程>] [--port <端口>] [--wait-ms <等待预算>] [--restart-authorized --executable <实际程序> --cli <官方CLI> --log <日志>]');
   const key=args[i++].slice(2);options[key==='wait-ms'?'waitMs':key]=args[i];
 }
-if(!options.project||!path.isAbsolute(options.project))throw Error('工程必须是绝对路径');
+if(options.project&&!path.isAbsolute(options.project))throw Error('工程必须是绝对路径');
 if(options.authorized){
   if(!options.executable||!path.isAbsolute(options.executable))throw Error('授权启动需要实际程序绝对路径');
   fs.accessSync(options.executable);

@@ -6,7 +6,7 @@
 
 从实际开发者工具安装目录定位Resources/app.asar.unpacked/wechatide-skill；macOS示例为应用Contents/Resources下，Windows从实际安装目录resources下查找。大小写和路径以本机文件为准，不把示例路径当要求。找不到时只读搜索安装目录中的SKILL.md及tool-index.md，并报告定位结果。
 
-必读：根SKILL.md、references/environment-readiness.md、references/tool-index.md。按阶段读取：登录/开窗/AppID用skills/initializer/SKILL.md；导入/项目列表用skills/project-manager/SKILL.md；编译用skills/compiler/SKILL.md；诊断用skills/debugger/SKILL.md；点击/输入用skills/automator/SKILL.md。云服务先从源码确认实际SDK和服务来源，微信云开发/CloudBase用skills/cloudbase-operator/SKILL.md，其他服务查其对应接口，不一律按wx.cloud处理。参数不清楚时查对应命令--help或注册表wechatide-tools/references/tools.yaml的单项，不猜参数或工具名。
+启动准备期间仅只读安装内文档，不执行其中可能普通启动工具的初始化步骤；实际启动顺序以[通道准备](debug-channel.md)为准。必读：根SKILL.md、references/environment-readiness.md、references/tool-index.md。按阶段读取：登录/开窗/AppID用skills/initializer/SKILL.md；导入/项目列表用skills/project-manager/SKILL.md；编译用skills/compiler/SKILL.md；诊断用skills/debugger/SKILL.md；点击/输入用skills/automator/SKILL.md。云服务先从源码确认实际SDK和服务来源，微信云开发/CloudBase用skills/cloudbase-operator/SKILL.md，其他服务查其对应接口，不一律按wx.cloud处理。参数不清楚时查对应命令--help或注册表wechatide-tools/references/tools.yaml的单项，不猜参数或工具名。
 
 ## 已登记的代码诊断接口
 

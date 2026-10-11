@@ -22,11 +22,15 @@ function mock(options={}) {
     let data;
     if (!fn.includes('createSelectorQuery')) data={window:options.window || win,device:{model:'mock'},route:options.startRoute};
     else {
-      snapshots++;
-      const left=options.unstable?snapshots:options.animation?Math.min(snapshots,3):0;
-      data={route:options.wrongRoute?'other':route,nativeId:1,window:options.pageHeight && route==='two'?{...win,windowHeight:480}:win,rects:options.missing?[[]]:[
-        [{left,top:0,right:320,bottom:100,width:320,height:100}],
-        [{left:10,top:10,right:options.overflow?350:100,bottom:60,width:90,height:50}]]};
+      const sample = () => {
+        snapshots++;
+        const left=options.unstable?snapshots:options.animation?Math.min(snapshots,3):0;
+        return {route:options.wrongRoute?'other':route,nativeId:1,window:options.pageHeight && route==='two'?{...win,windowHeight:480}:win,rects:options.missing?[[]]:[
+          [{left,top:0,right:320,bottom:100,width:320,height:100}],
+          [{left:10,top:10,right:options.overflow?350:100,bottom:60,width:90,height:50}]]};
+      };
+      data=sample();
+      if(fn.includes('second.firstSample=first')) { const first=data;data=sample();data.firstSample=first; }
     }
     return {ok:true,result:{success:true,result:{result:data}}};
   };
@@ -53,7 +57,8 @@ await test('新机型精测按完整名称匹配，同尺寸旧型号降为最�
   assert.throws(()=>buildPlan(table.slice(0,-1)),/缺少精测机型/);
   } finally { if(previous===undefined)delete process.env.WECHATIDE_PRECISE_MODELS;else process.env.WECHATIDE_PRECISE_MODELS=previous; }
 });
-await test('精测核对稳定性并且每页只保留一张截图',async()=>{const m=mock();const r=await scanUI(root,{...opts,...m,mode:'precise'});assert.equal(r.pages.length,2);assert.equal(m.calls.length,16);assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,2);assert(r.pages.every(p=>p.screenshot));});
+await test('精测合并两次布局采样，每页只保留一张截图',async()=>{const m=mock();const r=await scanUI(root,{...opts,...m,mode:'precise'});assert.equal(r.pages.length,2);assert.equal(m.calls.length,12);assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,2);assert(r.pages.every(p=>p.screenshot&&p.layoutSamples===2));});
+await test('当前页直接采集，仍核对页面实例；不重复导航',async()=>{const m=mock({startRoute:'one'});const r=await scanUI(root,{...opts,...m,only:'one'});assert(r.restored);assert.equal(r.elements,2);assert.equal(m.calls.filter(c=>c.tool==='automation_navigate').length,0);assert.equal(m.calls.length,4);});
 await test('不同页面内容高度变化不误判为机型切换',async()=>{const m=mock({pageHeight:true});const r=await scanUI(root,{...opts,...m,mode:'precise'});assert(!r.incomplete);assert.equal(r.pages[1].viewport.height,480);});
 await test('已在原页面时不重复导航恢复',async()=>{const m=mock({startRoute:'two'});const r=await scanUI(root,{...opts,...m});assert(r.restored);assert.equal(m.calls.length,8);});
 await test('尺寸不匹配时不导航、不套默认尺寸',async()=>{const m=mock({window:{...win,screenWidth:390}});await assert.rejects(()=>scanUI(root,{...opts,...m}),/目标尺寸/);assert.equal(m.calls.length,1);});
@@ -64,8 +69,35 @@ await test('恢复成功后再次超时不重复恢复',async()=>{let calls=0;co
 await test('错误页面不记为通过，仍核对其他页面',async()=>{const m=mock({wrongRoute:true});const r=await scanUI(root,{...opts,...m});assert(r.incomplete);assert.equal(r.elements,0);assert.deepEqual(r.unvisitedPages,[]);assert.equal(r.pages.length,2);});
 await test('同路径旧页面编号停止采集，不能生成该页截图证据',async()=>{const m=mock({stalePage:true});const r=await scanUI(root,{...opts,...m,mode:'precise'});assert(r.incomplete);assert.equal(r.elements,0);assert.match(r.pages[0].error,/已过期/);assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,0);});
 await test('页面编号查询失败停止采集，不只比较路径',async()=>{const m=mock();const call=(tool,...args)=>tool==='automation_runtime_info'?{ok:false,message:'unavailable'}:m.call(tool,...args);const r=await scanUI(root,{...opts,call});assert(r.incomplete);assert.equal(r.elements,0);assert.deepEqual(r.unvisitedPages,[]);assert.equal(r.pages.length,2);});
+await test('精测第一次采样失配或不完整也不能被第二次正常结果掩盖',async()=>{
+ for(const failure of ['stale','missing']){
+  const m=mock();const call=(tool,args)=>{const r=m.call(tool,args);const first=r.result?.result?.result?.firstSample;if(first){if(failure==='stale')first.nativeId=2;else first.rects=[[]];}return r;};
+  const r=await scanUI(root,{...opts,call,mode:'precise'});assert(r.incomplete);assert.equal(r.elements,0);assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,0);
+ }
+});
+await test('截图期间页面实例改变时保留失败，不将图片记为该页证据',async()=>{
+ const m=mock();let captured=false;const call=(tool,args)=>{const r=m.call(tool,args);if(tool==='simulator_screenshot')captured=true;if(tool==='automation_runtime_info'&&captured)r.result.currentPage.pageId=2;return r;};
+ const r=await scanUI(root,{...opts,call,only:'one',mode:'precise'});assert(r.incomplete);assert.match(r.pages[0].screenshotError,/已过期/);assert(!r.pages[0].screenshot);
+});
+await test('实际执行合并采样函数：两次查询间隔100毫秒并独立返回矩形',async()=>{
+ const m=mock();let samples=0;const delays=[];
+ const call=async(tool,args)=>{
+  const source=args[args.indexOf('--fn-source')+1];
+  if(tool!=='automation_evaluate'||!source.includes('createSelectorQuery'))return m.call(tool,args);
+  const fn=vm.runInNewContext('('+source+')',{
+   getCurrentPages:()=>[{route:'one',__wxWebviewId__:1}],
+   setTimeout:(cb,ms)=>{delays.push(ms);cb();},
+   wx:{getWindowInfo:()=>win,createSelectorQuery:()=>{
+    samples++;const rects=[];const query={in(){return this;},selectAll(){return this;},boundingClientRect(){rects.push([{left:samples,top:0,right:100,bottom:50,width:99,height:50}]);return this;},exec(cb){cb(rects);}};return query;
+   }}
+  });
+  return {ok:true,result:{success:true,result:{result:await fn()}}};
+ };
+ const r=await scanUI(root,{...opts,call,only:'one',mode:'precise'});
+ assert.equal(samples,2);assert.deepEqual(delays,[100]);assert.equal(r.pages[0].layoutSamples,2);assert.equal(r.pages[0].layoutStable,false);assert(r.pages[0].screenshot);
+});
 await test('丢失采集结果不记为零问题通过',async()=>{const m=mock({missing:true});const r=await scanUI(root,{...opts,...m});assert(r.incomplete);assert.equal(r.elements,0);});
-await test('精测动画或持续变化保留截图并标记读图判断，不中止后续页面',async()=>{const m=mock({unstable:true});const waits=[];const r=await scanUI(root,{...opts,...m,mode:'precise',sleep:async ms=>waits.push(ms)});assert.equal(r.pages.length,2);assert(r.pages.every(p=>p.layoutStable===false&&p.needsVisualReview));assert.deepEqual(waits,[100,100]);assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,2);});
+await test('精测动画或持续变化保留截图并标记读图判断，不中止后续页面',async()=>{const m=mock({unstable:true});const r=await scanUI(root,{...opts,...m,mode:'precise'});assert.equal(r.pages.length,2);assert(r.pages.every(p=>p.layoutStable===false&&p.needsVisualReview));assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,2);});
 await test('页面无class可见元素仍采集截图，几何缺口不判为通过',async()=>{const m=mock();const call=(tool,args,...rest)=>{const r=m.call(tool,args,...rest);if(tool==='automation_evaluate'&&args[args.indexOf('--fn-source')+1].includes('createSelectorQuery'))r.result.result.result.rects=[[],[]];return r;};const r=await scanUI(root,{...opts,call,mode:'precise'});assert(r.incomplete);assert.equal(r.elements,0);assert(r.pages.every(p=>p.needsVisualReview&&p.screenshot));});
 await test('异常才截图，且截图在工程外',async()=>{const m=mock({overflow:true});const r=await scanUI(root,{...opts,...m});assert(r.totals.P0>0);assert.equal(m.calls.filter(c=>c.tool==='simulator_screenshot').length,2);assert(r.pages.every(p=>!p.screenshot.startsWith(root+path.sep)));});
 const rail={left:0,top:0,right:320,bottom:50,width:320,height:50,scrollX:true};

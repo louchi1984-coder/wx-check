@@ -10,7 +10,7 @@
 | check-debug-channel.mjs | 只读协议探活，可保存本轮连接信息 | 不登录、不打开工程 |
 | read-ide-diagnostics.mjs | 保存构建、代码质量、问题及输出原始证据 | 按[诊断说明](official-tool-skill.md)核对范围，空队列不证明无问题 |
 | ui-check.mjs | 同窗口批量切机型、读取尺寸／矩形、保存截图及恢复 | 按[UI说明](ui-batch.md)；截图仍须读图，几何采集不等于完整UI测试 |
-| launch-debug-channel.mjs | 准备入口的底层启动器 | 普通测试不单独调用 |
+| launch-debug-channel.mjs | 工具未运行时首次带参数启动 | 首次启动可直接调用；已有普通实例使用prepare，不先普通打开 |
 
 ## 调用前
 
@@ -22,19 +22,27 @@
 
 | 入口 | 必要参数与结果 |
 | --- | --- |
-| prepare-debug-channel / check-debug-channel | --project为工程绝对路径，--port为CDP端口；退出0且工程匹配数为1才可读取。授权启动的额外参数按通道说明；prepare不使用--out，check可用--out保存工程外新JSON，需protocol.available为true |
+| prepare-debug-channel / check-debug-channel | --port为CDP端口；工程未选定时省略--project，只核验HTTP；工程确定后--project用绝对路径，需ready、匹配数为1、protocol.available为true才可测试。prepare不使用--out；check的--out保存工程外连接JSON，必须同时指定工程 |
 | read-ide-diagnostics | --project、--port、--out；--out是工程外JSON文件。保存成功后检查quality、build.scope、problems.available及output各通道的available/complete/truncated，不能把文件生成当所有来源完整读取 |
 | ui-check --plan | --project；不切机型、不截图。未设六款精测时列机型目录，设置后列精测与最小检查计划 |
 | ui-check --matrix | --project、--out工程外目录；先设置六款WECHATIDE_PRECISE_MODELS，端口参数用--debug-port。完成后检查failures、unvisited、restoration及每页采集/截图结果 |
 | ui-check --devices | --project、具体完整机型名、--out；只采集指定机型，不能代替完整matrix计划。--expected-size只检查当前机型，不负责切换 |
 
-UI工具的report.json、report.md和shots目录是采集附件，单项报告由执行者按报告规范整理。低层launch-debug-channel不作为独立测试入口。
+UI工具的report.json、report.md和shots目录是采集附件，单项报告由执行者按报告规范整理。launch-debug-channel用于首次启动，不是测试结果；启动请求后须只读核验通道。
 
 ## 调用与判断
 
 CLI输出可能夹带日志；按实际完整JSON检查ok及result.success，退出码0不代表业务成功；非零退出即使夹有成功JSON也不能当作成功。失败保留退出码、信号和完整原始输出。返回结构与参数查当前官方帮助，不能沿用旧版本猜测。编译入口可能触发整工程编译，错误归属按实际消息，不按调用文件猜测。
 
 开窗后等到具体运行页再操作，已有正确状态直接继续。空字符串输入曾出现返回成功却未清空，必要时用官方元素input事件并读回验证。点击可能改变hover类，定位失败时读取实际元素属性；使用唯一且明确的目标，不修改应用来迁就测试。
+
+同一状态下的相关字段一次读取，在本地对照，避免每个字段启动一次CLI。当前官方getData省略data-path可读整份页面data；数据很大时用只读automation_evaluate返回本次需要的字段及route。表单可连续填写后一起读回实际输入值，再提交；有联动或校验的字段按实际变化核对。操作仍从官方元素接口执行，不用evaluate调用业务函数。
+
+```sh
+wechatide -c <已授权clientName> automation_page_action --project <工程绝对路径> --action getData
+```
+
+一段已经明确的步骤可在同次命令调用中顺序执行并保存各步结果，异常就停下相关操作；批量读取不等于并发提交。工具已返回就绪结果时不追加固定sleep。页面切换后核对目标，结果矛盾或连接异常时再补查，不为每个字段重复查询当前页。记录每段操作的耗时和结果，慢时先定位耗时调用，不重跑整项来猜原因。
 
 UI采集只提供横向溢出、点击区域及稳定性线索，44×44阈值不是自动修复决定。条件渲染、合法空态与遗漏按实际页面判断。重叠、截断、遮挡和布局感受仍由执行者读图及按疑点操作确认。IDE的automator超时与调用进程超时分开；采集对前者查询实际页面，确认就绪后重试一次，不重放业务提交。
 

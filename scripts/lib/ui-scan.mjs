@@ -63,16 +63,17 @@ function scrollSelectors(wxml) {
   return [...new Set(selectors)];
 }
 
-/** 整页一次采集；滚动容器仅附带可序列化的几何与当前scrollX属性。 */
-async function pageSnapshot(run, classes, scrolls = []) {
-  const fn = 'function(){return new Promise(function(resolve){' +
+/** 整页采集；精测在同次运行时调用中采样两次，滚动容器只返回可序列化字段。 */
+async function pageSnapshot(run, classes, scrolls = [], precise = false) {
+  const fn = 'function(){function sample(){return new Promise(function(resolve){' +
     'var ps=getCurrentPages();var p=ps[ps.length-1];var q=wx.createSelectorQuery().in(p);' +
     'var cs=' + JSON.stringify(classes) + ',ss=' + JSON.stringify(scrolls) + ';' +
     'cs.forEach(function(c){q.selectAll("."+c).boundingClientRect();});' +
     'ss.forEach(function(s){q.selectAll(s).fields({rect:true,size:true,properties:["scrollX"]});' +
     'q.selectAll(cs.map(function(c){return s+" ."+c;}).join(",")).boundingClientRect();});' +
     'q.exec(function(r){resolve({route:p.route,nativeId:p.__wxWebviewId__||p.data.__webviewId__,window:wx.getWindowInfo(),' +
-    'rects:r.slice(0,cs.length),scrollClips:ss.map(function(s,i){return {selector:s,containers:r[cs.length+i*2],descendants:r[cs.length+i*2+1]};})});});});}';
+    'rects:r.slice(0,cs.length),scrollClips:ss.map(function(s,i){return {selector:s,containers:r[cs.length+i*2],descendants:r[cs.length+i*2+1]};})});});});}' +
+    (precise ? 'return sample().then(function(first){return new Promise(function(resolve){setTimeout(resolve,100);}).then(sample).then(function(second){second.firstSample=first;return second;});});}' : 'return sample();}');
   return (await run('automation_evaluate', ['--fn-source', fn])).result?.result?.result;
 }
 
@@ -177,7 +178,6 @@ export async function scanUI(project, opts = {}) {
    * 因为这个错误是 IDE 自己按内部超时返回的。命中后等重编译结束再重试一次。
    */
   const AUTOMATOR_DEAD = /timeout waiting for automator response/i;
-  const settle = opts.sleep || ((ms) => new Promise((res) => setTimeout(res, ms)));
   let recovered = false;
 
   const dead = (v) => AUTOMATOR_DEAD.test(String(v?.message ?? v));
@@ -255,6 +255,7 @@ export async function scanUI(project, opts = {}) {
     throw new Error('截图目录必须在被测工程之外，避免触发热重载');
   }
   const touchAll = [];
+  let currentRoute = info.route;
   for (const page of pages) {
     const wxml = readWxml(project, page);
     const classes = [...new Set(classesIn(wxml))];
@@ -262,10 +263,13 @@ export async function scanUI(project, opts = {}) {
     const scrolls = scrollSelectors(wxml);
     let entry;
     try {
-      await run('automation_navigate', ['--action', tabs.includes(page) ? 'switchTab' : 'reLaunch', '--url', '/' + page]);
+      if (currentRoute !== page) await run('automation_navigate', ['--action', tabs.includes(page) ? 'switchTab' : 'reLaunch', '--url', '/' + page]);
+      currentRoute = null;
       async function collect() {
-        const data = await pageSnapshot(run, classes, scrolls);
-        const context = assertPageSnapshot(data, await run('automation_runtime_info', ['--action', 'currentPage']));
+        const data = await pageSnapshot(run, classes, scrolls, mode === 'precise');
+        const current = await run('automation_runtime_info', ['--action', 'currentPage']);
+        const context = assertPageSnapshot(data, current);
+        if (mode === 'precise') assertPageSnapshot(data?.firstSample, current);
         if (data?.route !== page) throw new Error('当前页面与目标不一致');
         if (!['screenWidth', 'screenHeight', 'pixelRatio', 'windowWidth'].every(k => data.window?.[k] === info.window[k])) {
           throw new Error('检测中途屏幕尺寸改变');
@@ -277,18 +281,17 @@ export async function scanUI(project, opts = {}) {
         if (!Array.isArray(scrollClips) || scrollClips.length !== scrolls.length || scrollClips.some(c => !Array.isArray(c.containers) || !Array.isArray(c.descendants))) {
           throw new Error('滚动容器采集不完整');
         }
-        return { rects: Object.fromEntries(classes.map((c, i) => [c, data.rects[i]])), scrollClips, window: data.window, context };
+        const first = data.firstSample;
+        if (mode === 'precise' && (!Array.isArray(first.rects) || first.rects.length !== classes.length || first.rects.some(x => !Array.isArray(x)))) throw Error('首次布局采集不完整');
+        return { rects: Object.fromEntries(classes.map((c, i) => [c, data.rects[i]])), scrollClips, window: data.window, context,
+          ...(first ? { firstSample: { window: first.window, rects: Object.fromEntries(classes.map((c, i) => [c, first.rects[i]])) } } : {}) };
       }
-      let snapshot = await collect();
-      let layoutSamples = 1;
+      const snapshot = await collect();
+      const layoutSamples = mode === 'precise' ? 2 : 1;
       if (mode === 'precise') {
         const signature = r => JSON.stringify(groupByElement(r).map(({el,classes}) =>
           [classes, el.left, el.top, el.right, el.bottom]));
-        await settle(100);
-        const second = await collect();
-        layoutSamples++;
-        snapshot.layoutStable = sameWindow(snapshot.window, second.window) && signature(snapshot.rects) === signature(second.rects);
-        snapshot = { ...second, layoutStable: snapshot.layoutStable };
+        snapshot.layoutStable = sameWindow(snapshot.firstSample.window, snapshot.window) && signature(snapshot.firstSample.rects) === signature(snapshot.rects);
       }
       const rects = snapshot.rects;
       const checked = checkPage(rects, taps, vw, snapshot.scrollClips);
@@ -299,6 +302,7 @@ export async function scanUI(project, opts = {}) {
         touchSmall: checked.touchSmall, rects, scrollClips: snapshot.scrollClips, dataState: pageData[page]?.state || 'unknown' };
       entry.context = snapshot.context;
       entry.layoutSamples = layoutSamples;
+      currentRoute = page;
       if (mode === 'precise') entry.layoutStable = snapshot.layoutStable;
       if (geometryUnavailable || snapshot.layoutStable === false) {
         entry.needsVisualReview = true;
@@ -324,10 +328,10 @@ export async function scanUI(project, opts = {}) {
       try {
         const file = path.join(shotDir, page.replace(/\//g, '_') + '.png');
         if (entry.error) throw Error('页面核对或采集失败，未将截图作为该页证据');
-        assertPageSnapshot({ nativeId: entry.context.nativeId, route: page }, await run('automation_runtime_info', ['--action', 'currentPage']));
         await run('simulator_screenshot', ['--path', file]);
+        assertPageSnapshot({ nativeId: entry.context.nativeId, route: page }, await run('automation_runtime_info', ['--action', 'currentPage']));
         entry.screenshot = file;
-      } catch (e) { entry.screenshotError = e.message; }
+      } catch (e) { entry.screenshotError = e.message; report.incomplete = true; currentRoute = null; }
     }
     if (report.aborted) break;
   }
@@ -336,7 +340,7 @@ export async function scanUI(project, opts = {}) {
   if (touchIssue) { report.issues.push(touchIssue); report.totals.P1++; }
   if (opts.restorePage === false) {
     report.restorationDeferred = true;
-  } else if (first.route && !report.aborted && report.pages.at(-1)?.page === first.route) {
+  } else if (first.route && !report.aborted && currentRoute === first.route) {
     report.restored = true;
   } else if (first.route && !report.aborted) {
     try {
