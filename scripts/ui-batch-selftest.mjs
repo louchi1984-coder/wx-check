@@ -107,21 +107,70 @@ await test('横向滚动容器裁剪的内容不误报屏幕溢出',async()=>{as
 await test('关闭横向滚动后仍检测真实溢出',async()=>{assert.equal(checkPage({chip:[chip]},[],320,[{...clip,containers:[{...rail,scrollX:false}]}]).issues.length,1);});
 await test('滚动容器自身越界不能豁免其内容',async()=>{const wide={...rail,right:350,width:350};const r=checkPage({rail:[wide],chip:[chip]},[],320,[{...clip,containers:[wide]}]);assert.equal(r.issues.length,2);});
 await test('同类名但在滚动容器外的元素仍检测溢出',async()=>{const outside={...chip,top:70,bottom:100};const r=checkPage({chip:[chip,outside]},[],320,[clip]);assert.equal(r.issues.length,1);});
-await test('运行时滚动属性与后代在同次采集读取，最小检查不产生误报截图',async()=>{
+async function scrollScan(wxml, data = {}, offsets = [{scrollLeft:0,scrollWidth:532}]) {
  const file=path.join(root,'one.wxml'),before=fs.readFileSync(file);
- fs.writeFileSync(file,'<scroll-view id="rail" class="rail r-{{state}}" scroll-x="{{enabled}}"><view class="chip" /></scroll-view>');
+ fs.writeFileSync(file,wxml);
  const calls=[];let route='';
  const call=async(tool,args)=>{
   calls.push(tool);
   if(tool==='automation_navigate'){route='one';return {ok:true,result:{success:true}};}
   if(tool==='automation_runtime_info')return {ok:true,result:{success:true,currentPage:{pageId:1,path:route}}};
+  if(tool==='simulator_screenshot')return {ok:true,result:{success:true}};
   const requests=[];let selector;
-  const query={in(){return this;},selectAll(s){selector=s;return this;},boundingClientRect(){requests.push(selector==='.rail'?[rail]:selector==='.chip'||selector.includes(' .chip')?[chip]:[]);return this;},fields(fields){assert.deepEqual(Array.from(fields.properties),['scrollX']);requests.push([rail]);return this;},exec(cb){cb(requests);}};
-  const fn=vm.runInNewContext('('+args[args.indexOf('--fn-source')+1]+')',{getCurrentPages:()=>[{route,__wxWebviewId__:1}],wx:{createSelectorQuery:()=>query,getWindowInfo:()=>win,getDeviceInfo:()=>({model:'test'})}});
+  const query={in(){return this;},selectAll(s){selector=s;return this;},boundingClientRect(){requests.push(selector==='.rail'||selector==='#rail'?[rail]:selector==='.chip'||selector.includes(' .chip')?[chip]:[]);return this;},scrollOffset(){requests.push(offsets);return this;},fields(){throw Error('An object could not be cloned.');},exec(cb){cb(requests);}};
+  const fn=vm.runInNewContext('('+args[args.indexOf('--fn-source')+1]+')',{getCurrentPages:()=>[{route,__wxWebviewId__:1,data}],wx:{createSelectorQuery:()=>query,getWindowInfo:()=>win,getDeviceInfo:()=>({model:'test'})}});
   return {ok:true,result:{success:true,result:{result:await fn()}}};
  };
- try {const r=await scanUI(root,{...opts,call,only:'one'});assert(!r.incomplete);assert.equal(r.totals.P0,0);assert.equal(r.pages[0].scrollClips.length,1);assert(!calls.includes('simulator_screenshot'));assert.equal(calls.length,5);}
+ try {return {report:await scanUI(root,{...opts,call,only:'one'}),calls};}
  finally{fs.writeFileSync(file,before);}
+}
+await test('fields不可用时用矩形和滚动偏移采集，开启的动态滚动不误报',async()=>{
+ const {report:r,calls}=await scrollScan('<scroll-view id="rail" class="rail r-{{state}}" scroll-x="{{enabled}}"><view class="chip" /></scroll-view>',{enabled:true});
+ assert(!r.incomplete);assert.equal(r.totals.P0,0);assert.equal(r.pages[0].scrollClips.length,1);assert.equal(r.pages[0].scrollClips[0].containers[0].scrollWidth,532);assert(!calls.includes('simulator_screenshot'));assert.equal(calls.length,5);
+});
+await test('裸scroll-x保持兼容，缺少滚动属性时不凭内容宽豁免',async()=>{
+ const enabled=await scrollScan('<scroll-view class="rail" scroll-x><view class="chip" /></scroll-view>');
+ assert(!enabled.report.incomplete);assert.equal(enabled.report.totals.P0,0);
+ const disabled=await scrollScan('<scroll-view class="rail"><view class="chip" /></scroll-view>');
+ assert.equal(disabled.report.totals.P0,1);
+});
+await test('动态关闭滚动时内容仍超宽也判真实越界',async()=>{
+ const {report:r}=await scrollScan('<scroll-view class="rail" scroll-x="{{enabled}}"><view class="chip" /></scroll-view>',{enabled:false});
+ assert(!r.incomplete);assert.equal(r.totals.P0,1);
+});
+await test('布尔常量与普通页面字段区分，支持绑定内部空白',async()=>{
+ for(const [value,issues] of [['{{ true }}',0],['{{false}}',1]]){
+  const {report:r}=await scrollScan('<scroll-view class="rail" scroll-x="'+value+'"><view class="chip" /></scroll-view>');
+  assert(!r.incomplete);assert.equal(r.totals.P0,issues);
+ }
+});
+await test('相同选择器对应不同滚动开关时保留定位缺口',async()=>{
+ const {report:r}=await scrollScan('<scroll-view class="rail" scroll-x><view class="chip" /></scroll-view><scroll-view class="rail" scroll-x="{{false}}" />');
+ assert(r.incomplete);assert.equal(r.totals.P0,0);assert.equal(r.pages[0].scrollingUnconfirmed.length,1);
+});
+await test('字符串false不当作已核实的布尔关闭状态',async()=>{
+ const {report:r}=await scrollScan('<scroll-view class="rail" scroll-x="false"><view class="chip" /></scroll-view>');
+ assert(r.incomplete);assert.equal(r.totals.P0,0);assert.equal(r.pages[0].scrollingUnconfirmed.length,1);
+});
+await test('复杂滚动绑定无法核实时保留缺口，不误报缺陷或通过',async()=>{
+ const {report:r}=await scrollScan('<scroll-view class="rail" scroll-x="{{enabled && ready}}"><view class="chip" /></scroll-view>',{enabled:true,ready:true});
+ assert(r.incomplete);assert.equal(r.totals.P0,0);assert.equal(r.pages[0].scrollingUnconfirmed.length,1);
+});
+await test('滚动偏移缺失不伪造成零宽度或完整采集',async()=>{
+ const {report:r}=await scrollScan('<scroll-view class="rail" scroll-x><view class="chip" /></scroll-view>',{},[]);
+ assert(r.incomplete);assert.match(r.pages[0].error,/滚动容器采集不完整/);
+});
+await test('采集超时且页面探测失败时停止后页，不二分或自动重编译',async()=>{
+ const m=mock();let stuck=false;
+ const call=(tool,args,...rest)=>{
+  if(stuck)throw Error('timeout waiting for automator response');
+  if(tool==='automation_evaluate'&&args[args.indexOf('--fn-source')+1].includes('createSelectorQuery')){stuck=true;throw Error('timeout waiting for automator response');}
+  return m.call(tool,args,...rest);
+ };
+ const r=await scanUI(root,{...opts,call});
+ assert(r.aborted);assert(r.incomplete);assert.deepEqual(r.unvisitedPages,['two']);
+ assert.equal(r.pages.length,1);assert.equal(r.elements,0);assert.equal(m.calls.filter(c=>c.tool==='automation_navigate').length,1);
+ assert(m.calls.every(c=>!['simulator_refresh','simulator_open_page'].includes(c.tool)));
 });
 await test('禁止将截图写入工程中',async()=>{const m=mock();await assert.rejects(()=>scanUI(root,{...opts,...m,screenshotDir:path.join(root,'shots')}),/工程之外/);});
 await test('同一问题跨机型合并且保留机型清单',async()=>{

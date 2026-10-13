@@ -53,14 +53,27 @@ function tapClasses(wxml) {
 }
 
 function scrollSelectors(wxml) {
-  const selectors = [];
+  const selectors = new Map();
   for (const m of String(wxml).matchAll(/<scroll-view\b((?:"[^"]*"|'[^']*'|[^'">])*)>/g)) {
     const attrs = m[1];
     const id = attrs.match(/\bid=["']([A-Za-z0-9_-]+)["']/)?.[1];
     const classes = classesIn(attrs);
-    if (id || classes.length) selectors.push(id ? '#' + id : '.' + classes.join('.'));
+    if (id || classes.length) {
+      const selector = id ? '#' + id : '.' + classes.join('.');
+      const attr = attrs.match(/\bscroll-x\b(?:\s*=\s*["']([^"']*)["'])?/);
+      const value = attr?.[1]?.trim();
+      const literal = value?.match(/^\{\{\s*(true|false)\s*\}\}$/)?.[1];
+      const enabled = !attr ? false : value === undefined || value === 'true' || literal === 'true' ? true : literal === 'false' ? false : null;
+      const binding = enabled === null ? value?.match(/^\{\{\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\}\}$/)?.[1] : null;
+      const spec = { selector, enabled, binding: binding ? binding.split('.') : null };
+      const previous = selectors.get(selector);
+      if (previous && (previous.enabled !== spec.enabled || JSON.stringify(previous.binding) !== JSON.stringify(spec.binding))) {
+        spec.enabled = null; spec.binding = null;
+      }
+      selectors.set(selector, spec);
+    }
   }
-  return [...new Set(selectors)];
+  return [...selectors.values()];
 }
 
 /** 整页采集；精测在同次运行时调用中采样两次，滚动容器只返回可序列化字段。 */
@@ -69,10 +82,16 @@ async function pageSnapshot(run, classes, scrolls = [], precise = false) {
     'var ps=getCurrentPages();var p=ps[ps.length-1];var q=wx.createSelectorQuery().in(p);' +
     'var cs=' + JSON.stringify(classes) + ',ss=' + JSON.stringify(scrolls) + ';' +
     'cs.forEach(function(c){q.selectAll("."+c).boundingClientRect();});' +
-    'ss.forEach(function(s){q.selectAll(s).fields({rect:true,size:true,properties:["scrollX"]});' +
-    'q.selectAll(cs.map(function(c){return s+" ."+c;}).join(",")).boundingClientRect();});' +
+    'ss.forEach(function(s){q.selectAll(s.selector).boundingClientRect();q.selectAll(s.selector).scrollOffset();' +
+    'q.selectAll(cs.map(function(c){return s.selector+" ."+c;}).join(",")).boundingClientRect();});' +
     'q.exec(function(r){resolve({route:p.route,nativeId:p.__wxWebviewId__||p.data.__webviewId__,window:wx.getWindowInfo(),' +
-    'rects:r.slice(0,cs.length),scrollClips:ss.map(function(s,i){return {selector:s,containers:r[cs.length+i*2],descendants:r[cs.length+i*2+1]};})});});});}' +
+    'rects:r.slice(0,cs.length),scrollClips:ss.map(function(s,i){var rects=r[cs.length+i*3],offsets=r[cs.length+i*3+1],enabled=s.enabled;' +
+    'if(s.binding){var value=p.data;s.binding.forEach(function(k){value=value==null?undefined:value[k];});enabled=typeof value==="boolean"?value:null;}' +
+    'var complete=Array.isArray(rects)&&Array.isArray(offsets)&&rects.length===offsets.length;' +
+    'var containers=(rects||[]).map(function(c,j){var off=(offsets||[])[j];if(!c||!off||!Number.isFinite(off.scrollWidth)){complete=false;return c;}' +
+    'var o={};["left","top","right","bottom","width","height"].forEach(function(k){o[k]=c[k];});' +
+    'o.scrollLeft=off.scrollLeft;o.scrollWidth=off.scrollWidth;o.scrollX=enabled===null?null:enabled&&off.scrollWidth>c.width;return o;});' +
+    'return {selector:s.selector,complete:complete,containers:containers,descendants:r[cs.length+i*3+2]};})});});});}' +
     (precise ? 'return sample().then(function(first){return new Promise(function(resolve){setTimeout(resolve,100);}).then(sample).then(function(second){second.firstSample=first;return second;});});}' : 'return sample();}');
   return (await run('automation_evaluate', ['--fn-source', fn])).result?.result?.result;
 }
@@ -107,6 +126,7 @@ export function groupByElement(rects) {
 export function checkPage(rects, taps, vw, scrollClips = []) {
   const issues = [];
   const touchSmall = [];
+  const scrollingUnconfirmed = [];
   const add = (level, rule, cls, msg) => issues.push({ level, rule, class: cls, msg });
   // 零尺寸（宽高都是 0）等于不可见元素：既不参与判定，也不计入元素数 ——
   // 保持与按矩形去重的原语义一致，别让重写顺手改变报告里的数字口径。
@@ -123,17 +143,20 @@ export function checkPage(rects, taps, vw, scrollClips = []) {
     // 报真实 class 组合（按 wxml 里的书写顺序），而不是碰巧先匹配上的那一个
     const label = classes.join(' ');
 
-    const clipped = scrollClips.some(clip => clip.containers.length > 0 &&
-      clip.containers.every(c => c.scrollX === true && c.width > 0 && c.height > 0 && c.left >= -1 && c.right <= vw + 1) &&
+    const matchingClips = scrollClips.filter(clip => clip.containers.length > 0 &&
+      clip.containers.every(c => c.width > 0 && c.height > 0 && c.left >= -1 && c.right <= vw + 1) &&
       clip.descendants.some(d => ['left', 'top', 'right', 'bottom'].every(k => d[k] === el[k])));
-    if (!clipped && r > vw + 1) add('P0', '横向溢出', label, '右边界 ' + R(r) + ' 超出屏幕宽 ' + vw);
-    if (!clipped && l < -1) add('P0', '横向溢出', label, '左边界 ' + R(l) + ' 在屏幕外');
+    const clipped = matchingClips.some(clip => clip.containers.every(c => c.scrollX === true));
+    const unknown = !clipped && matchingClips.some(clip => clip.containers.some(c => c.scrollX === null));
+    if (unknown && (r > vw + 1 || l < -1)) scrollingUnconfirmed.push({ class: label, reason: '滚动绑定未核实，需确认内容是否被正常裁剪' });
+    if (!clipped && !unknown && r > vw + 1) add('P0', '横向溢出', label, '右边界 ' + R(r) + ' 超出屏幕宽 ' + vw);
+    if (!clipped && !unknown && l < -1) add('P0', '横向溢出', label, '左边界 ' + R(l) + ' 在屏幕外');
 
     const tapCls = classes.filter((c) => taps.includes(c));
     if (tapCls.length && (w < TOUCH_MIN || h < TOUCH_MIN)) touchSmall.push({ classes: tapCls, w, h });
   }
 
-  return { issues, uniq: els.length, touchSmall };
+  return { issues, uniq: els.length, touchSmall, scrollingUnconfirmed };
 }
 
 /**
@@ -173,9 +196,8 @@ export async function scanUI(project, opts = {}) {
   const tabs = tabPages(app);
   const timings = [];
   /**
-   * automator 在 simulator_refresh 之后会有一段不可用窗口（重编译中），
-   * 此时 IDE 侧直接回 "timeout waiting for automator response" —— 加大调用方超时没有用，
-   * 因为这个错误是 IDE 自己按内部超时返回的。命中后等重编译结束再重试一次。
+   * 超时可能是重编译未就绪，也可能是桥接已卡死。只探测一次当前页；
+   * 探测成功才重试，探测失败或再次超时则停止整批，不让后续页面的结果被污染。
    */
   const AUTOMATOR_DEAD = /timeout waiting for automator response/i;
   let recovered = false;
@@ -209,12 +231,12 @@ export async function scanUI(project, opts = {}) {
         if (!probe.err && probe.r?.result?.currentPage?.path) {
           ({ r: res, err } = await attempt(tool, args));
         } else {
-          const failure = new Error(err + '；页面探测：' + (probe.err || '当前页面未就绪'));
-          failure.connectionUnavailable = /项目调试连接(?:已关闭|失败|超时)/.test(probe.err || '');
+          const failure = new Error(err + '；页面探测：' + (probe.err || '当前页面未就绪') + '；停止采集，先恢复自动化桥接并核验运行页');
+          failure.connectionUnavailable = true;
           throw failure;
         }
       }
-      if (err) { const failure = new Error(err); failure.connectionUnavailable = /项目调试连接(?:已关闭|失败|超时)/.test(err); throw failure; }
+      if (err) { const failure = new Error(err); failure.connectionUnavailable = dead(err) || /项目调试连接(?:已关闭|失败|超时)/.test(err); throw failure; }
       r = res;
       return r;
     } finally {
@@ -278,7 +300,7 @@ export async function scanUI(project, opts = {}) {
           throw new Error('页面元素采集不完整');
         }
         const scrollClips = data.scrollClips || [];
-        if (!Array.isArray(scrollClips) || scrollClips.length !== scrolls.length || scrollClips.some(c => !Array.isArray(c.containers) || !Array.isArray(c.descendants))) {
+        if (!Array.isArray(scrollClips) || scrollClips.length !== scrolls.length || scrollClips.some(c => c.complete === false || !Array.isArray(c.containers) || !Array.isArray(c.descendants))) {
           throw new Error('滚动容器采集不完整');
         }
         const first = data.firstSample;
@@ -296,10 +318,10 @@ export async function scanUI(project, opts = {}) {
       const rects = snapshot.rects;
       const checked = checkPage(rects, taps, vw, snapshot.scrollClips);
       const geometryUnavailable = !checked.uniq;
-      if (geometryUnavailable) report.incomplete = true;
+      if (geometryUnavailable || checked.scrollingUnconfirmed.length) report.incomplete = true;
       entry = { page, classes: classes.length, elements: checked.uniq, issues: checked.issues,
         viewport: { width: snapshot.window.windowWidth, height: snapshot.window.windowHeight },
-        touchSmall: checked.touchSmall, rects, scrollClips: snapshot.scrollClips, dataState: pageData[page]?.state || 'unknown' };
+        touchSmall: checked.touchSmall, scrollingUnconfirmed: checked.scrollingUnconfirmed, rects, scrollClips: snapshot.scrollClips, dataState: pageData[page]?.state || 'unknown' };
       entry.context = snapshot.context;
       entry.layoutSamples = layoutSamples;
       currentRoute = page;
@@ -323,7 +345,7 @@ export async function scanUI(project, opts = {}) {
     }
     report.pages.push(entry);
     // 精测每页保留一次界面证据；其余机型异常才截图。
-    if (mode === 'precise' || screenshot || entry.error || entry.issues.length) {
+    if (mode === 'precise' || screenshot || entry.error || entry.issues.length || entry.scrollingUnconfirmed?.length) {
       fs.mkdirSync(shotDir, { recursive: true });
       try {
         const file = path.join(shotDir, page.replace(/\//g, '_') + '.png');
